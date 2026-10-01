@@ -467,7 +467,7 @@ def _parse_grades(txt: str | None, n: int):
             out.append({"grade": grade,
                         "confidence": str(g.get("confidence", "low"))[:10],
                         "evidence": [str(e)[:160] for e in ev[:3]],
-                        "material": str(g.get("primary_material", ""))[:40],
+                        "material": str(g.get("primary_material", ""))[:80],
                         "pitch": str(g.get("pitch_estimate", ""))[:20],
                         "obstruction": str(g.get("obstruction_notes", ""))[:160],
                         "damage_boxes": boxes})
