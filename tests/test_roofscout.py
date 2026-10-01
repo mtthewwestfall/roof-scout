@@ -1067,3 +1067,160 @@ class TestDamagedOnly:
         job = self._run(monkeypatch, [(1, True), (2, False), (3, True)])
         assert job["status"] == "done"
         assert [h["grade"] for h in job["leads"]] == [2]
+
+
+# ---------------- street-level imagery fallback ----------------
+
+def _photo_jpeg(w=800, h=600):
+    import io as _io
+    from PIL import Image
+    img = Image.new("RGB", (w, h))
+    img.putdata([((x * 7) % 256, (y * 5) % 256, ((x + y) * 3) % 256)
+                 for y in range(h) for x in range(w)])
+    buf = _io.BytesIO()
+    img.save(buf, "JPEG")
+    return buf.getvalue()
+
+
+class TestStreetLevelFallback:
+    @pytest.fixture
+    def no_aerial(self, monkeypatch):
+        monkeypatch.setattr(pipeline, "_centered_esri", lambda *a, **k: None)
+        monkeypatch.setattr(pipeline, "_usgs_image", lambda *a, **k: None)
+
+    def test_aerial_wins_over_street(self, monkeypatch):
+        monkeypatch.setattr(pipeline, "_centered_esri",
+                            lambda lat, lng, z: b"esri")
+        monkeypatch.setattr(pipeline, "_mapillary_image",
+                            lambda *a: pytest.fail("street fetched"))
+        assert pipeline.roof_image(1, 2) == (b"esri", 20, "esri")
+
+    def test_order_mapillary_then_streetview(self, monkeypatch, no_aerial):
+        monkeypatch.setattr(pipeline, "_mapillary_image", lambda *a: b"mly")
+        monkeypatch.setattr(pipeline, "_streetview_image",
+                            lambda *a: pytest.fail("google fetched"))
+        assert pipeline.roof_image(1, 2) == (b"mly", 0, "mapillary")
+        monkeypatch.setattr(pipeline, "_mapillary_image", lambda *a: None)
+        monkeypatch.setattr(pipeline, "_streetview_image", lambda *a: b"sv")
+        assert pipeline.roof_image(1, 2) == (b"sv", 0, "streetview")
+
+    def test_nothing_anywhere(self, monkeypatch, no_aerial):
+        monkeypatch.setattr(pipeline, "_mapillary_image", lambda *a: None)
+        monkeypatch.setattr(pipeline, "_streetview_image", lambda *a: None)
+        assert pipeline.roof_image(1, 2, z=19) == (None, 19, "none")
+
+    def test_no_keys_no_requests(self, monkeypatch):
+        monkeypatch.delenv("MAPILLARY_ACCESS_TOKEN", raising=False)
+        monkeypatch.delenv("GOOGLE_MAPS_API_KEY", raising=False)
+        monkeypatch.setattr(pipeline, "_http_get",
+                            lambda *a, **k: pytest.fail("network used"))
+        assert pipeline._mapillary_image(1, 2) is None
+        assert pipeline._streetview_image(1, 2) is None
+
+    def test_streetview_skips_billed_fetch_without_pano(self, monkeypatch):
+        monkeypatch.setenv("GOOGLE_MAPS_API_KEY", "k")
+        calls = []
+        def fake(url, timeout=20):
+            calls.append(url)
+            return json.dumps({"status": "ZERO_RESULTS"}).encode()
+        monkeypatch.setattr(pipeline, "_http_get", fake)
+        assert pipeline._streetview_image(1, 2) is None
+        assert len(calls) == 1 and "/metadata?" in calls[0]
+
+    def test_streetview_returns_square_photo(self, monkeypatch):
+        monkeypatch.setenv("GOOGLE_MAPS_API_KEY", "k")
+        photo = _photo_jpeg(640, 640)
+        def fake(url, timeout=20):
+            if "/metadata?" in url:
+                return json.dumps({"status": "OK"}).encode()
+            assert "return_error_code=true" in url
+            return photo
+        monkeypatch.setattr(pipeline, "_http_get", fake)
+        out = pipeline._streetview_image(1, 2)
+        from PIL import Image
+        import io as _io
+        assert Image.open(_io.BytesIO(out)).size == (512, 512)
+
+    def test_square_jpeg_rejects_flat_and_non_jpeg(self):
+        import io as _io
+        from PIL import Image
+        buf = _io.BytesIO()
+        Image.new("RGB", (640, 640), (200, 200, 200)).save(buf, "JPEG")
+        assert pipeline._square_jpeg(buf.getvalue()) is None
+        assert pipeline._square_jpeg(b"\x89PNG....") is None
+        assert pipeline._square_jpeg(None) is None
+
+    def test_mapillary_picks_camera_facing_house(self):
+        lat, lng = 40.0, -80.0
+        south = lat - 0.0002  # ~22 m south of the house
+        imgs = [
+            {"id": "pano", "is_pano": True, "thumb_1024_url": "p",
+             "computed_geometry": {"coordinates": [lng, south]},
+             "computed_compass_angle": 0},
+            {"id": "away", "thumb_1024_url": "a",
+             "computed_geometry": {"coordinates": [lng, south]},
+             "computed_compass_angle": 180},
+            {"id": "far", "thumb_1024_url": "f",
+             "computed_geometry": {"coordinates": [lng, lat - 0.002]},
+             "computed_compass_angle": 0},
+            {"id": "good", "thumb_1024_url": "g",
+             "computed_geometry": {"coordinates": [lng, south]},
+             "computed_compass_angle": 10},
+        ]
+        assert pipeline._best_mapillary(lat, lng, imgs)["id"] == "good"
+        assert pipeline._best_mapillary(lat, lng, imgs[:3]) is None
+
+    def test_mapillary_fetches_best_thumb(self, monkeypatch):
+        monkeypatch.setenv("MAPILLARY_ACCESS_TOKEN", "t")
+        photo = _photo_jpeg()
+        lat, lng = 40.0, -80.0
+        listing = {"data": [{"id": "1", "thumb_1024_url": "https://img/1",
+                             "computed_geometry": {"coordinates": [lng, lat - 0.0002]},
+                             "computed_compass_angle": 0}]}
+        def fake(url, timeout=20):
+            if url.startswith(pipeline._MAPILLARY_IMAGES):
+                assert "bbox=" in url
+                return json.dumps(listing).encode()
+            assert url == "https://img/1"
+            return photo
+        monkeypatch.setattr(pipeline, "_http_get", fake)
+        assert pipeline._mapillary_image(lat, lng)
+
+    def test_grader_told_which_images_are_street_level(self, monkeypatch):
+        seen = {}
+        def fake_call(key, imgs, sources=None):
+            seen["sources"] = sources
+            return None
+        monkeypatch.setattr(pipeline, "_gemini_call", fake_call)
+        houses = [{"key": "a", "image_b64": "x", "imagery": "esri"},
+                  {"key": "b", "image_b64": "y", "imagery": "streetview"}]
+        pipeline.grade_roofs("key", houses)
+        assert seen["sources"] == ["esri", "streetview"]
+
+    def test_pinpoint_keeps_street_photo(self, monkeypatch):
+        import base64
+        monkeypatch.setattr(pipeline, "_centered_esri",
+                            lambda *a: pytest.fail("esri closeup fetched"))
+        sent = {}
+        def fake_json(key, parts, schema, max_tokens=4000):
+            sent["prompt"] = parts[0]["text"]
+            sent["img"] = parts[1]["inline_data"]["data"]
+            return None
+        monkeypatch.setattr(pipeline, "_gemini_json", fake_json)
+        b64 = base64.b64encode(_photo_jpeg(64, 64)).decode()
+        h = {"grade": 2, "lat": 1, "lng": 2, "zoom": 0, "imagery": "mapillary",
+             "image_b64": b64, "evidence": ["curling shingles"]}
+        pipeline.localize_damage("key", [h])
+        assert "street-level photo" in sent["prompt"]
+        assert sent["img"] == b64
+
+    def test_streetview_photos_not_cached(self):
+        payload = {"zip": "1", "leads": [
+            {"imagery": "streetview", "img": "data:x", "damage_img": "data:y",
+             "streetview_url": "u"},
+            {"imagery": "mapillary", "img": "data:m"}]}
+        out = server._cacheable(payload)
+        assert out["leads"][0]["img"] == "" and out["leads"][0]["damage_img"] == ""
+        assert out["leads"][0]["streetview_url"] == "u"
+        assert out["leads"][1]["img"] == "data:m"
+        assert payload["leads"][0]["img"] == "data:x"

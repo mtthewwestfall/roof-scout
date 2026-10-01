@@ -201,6 +201,11 @@
 
   <script>
     const $ = (id) => document.getElementById(id);
+    const streetLevel = (lead) => lead.imagery === 'mapillary' || lead.imagery === 'streetview';
+    const imgCaption = (lead) => ({
+      mapillary: 'Street-level photo used for this report (no aerial view available) · © Mapillary contributors, CC BY-SA',
+      streetview: 'Street-level photo used for this report (no aerial view available) · Imagery © Google',
+    }[lead.imagery] || 'Aerial survey image used for this report (roof centered)');
     const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
       ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -458,8 +463,8 @@
           <p style="margin: 8px 0 4px; font-weight:700; font-size: 14px;">${addrLine}</p>
           ${lead.verdict_note ? `<div class="verdict-note">🌳 ${esc(lead.verdict_note)}</div>` : ''}
           ${loc ? `<div class="dim">${esc(loc)}</div>` : ''}
-          ${lead.img ? `<img class="thumb" src="${lead.img}" alt="Aerial view" loading="lazy" />
-          <div class="imgcap">Aerial survey image used for this report (roof centered)</div>` : ''}
+          ${lead.img ? `<img class="thumb" src="${lead.img}" alt="${streetLevel(lead) ? 'Street-level view' : 'Aerial view'}" loading="lazy" />
+          <div class="imgcap">${imgCaption(lead)}</div>` : ''}
           ${lead.damage_img ? `<img class="thumb" src="${lead.damage_img}" alt="Damage close-up" loading="lazy" />
           <div class="imgcap">Damage close-up — problem areas marked (AI estimate, not an inspection)</div>` : ''}
 
@@ -528,7 +533,7 @@
           <div style="text-align:center; margin: 20px 0;">
             ${lead.img ? `<img src="${lead.img}" style="width: 300px; height: 200px; object-fit: cover; border: 1px solid #ccc; border-radius: 4px;" />` : ''}
             ${lead.damage_img ? `<img src="${lead.damage_img}" style="width: 300px; height: 200px; object-fit: cover; border: 1px solid #ccc; border-radius: 4px; margin-left: 8px;" />` : ''}
-            <div style="font-size: 11px; color: #666; margin-top: 4px; font-family: sans-serif;">Aerial survey images used for this assessment (roof centered; damage areas marked)</div>
+            <div style="font-size: 11px; color: #666; margin-top: 4px; font-family: sans-serif;">${streetLevel(lead) ? imgCaption(lead) : 'Aerial survey images used for this assessment (roof centered; damage areas marked)'}</div>
           </div>
 
           ${ev ? `<p><strong>What we observed:</strong></p><ul>${ev}</ul>` : ''}

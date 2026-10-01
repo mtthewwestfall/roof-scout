@@ -5,6 +5,9 @@ Sources (all free, no keys):
 - Nominatim (OpenStreetMap) for zip centroid + reverse-geocoded addresses.
 - Esri World Imagery tiles for high-res aerial views (primary).
 - USGS NAIP aerial photos via the National Map (free fallback where Esri has no coverage).
+- Mapillary street-level photos (MAPILLARY_ACCESS_TOKEN), then Google Street
+  View Static API (GOOGLE_MAPS_API_KEY) as last-resort fallbacks when no aerial
+  view exists. Each is skipped when its key is unset.
 - Gemini (gemini-3.1-flash-lite) vision with a strict JSON response schema
   for the 0-5 roof Tru-scale grade.
 """
@@ -14,6 +17,7 @@ import base64
 import io
 import json
 import math
+import os
 import re
 import threading
 import time
@@ -442,6 +446,9 @@ def _grid_points(zipcode: str, center, count: int, progress=None,
 
 _ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
 _USGS_EXPORT = "https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/export"
+_MAPILLARY_IMAGES = "https://graph.mapillary.com/images"
+_STREETVIEW = "https://maps.googleapis.com/maps/api/streetview"
+STREET_SOURCES = ("mapillary", "streetview")
 
 
 def _tile_xy(lat: float, lng: float, z: int):
@@ -495,6 +502,124 @@ def _usgs_image(lat: float, lng: float, half_m: float = 60.0) -> bytes | None:
         return None
 
 
+def _http_get(url: str, timeout: int = 20) -> bytes | None:
+    try:
+        req = urllib.request.Request(url, headers=_UA)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read()
+    except Exception:
+        return None
+
+
+def _square_jpeg(data: bytes | None) -> bytes | None:
+    """Center-crop a photo to a 512x512 JPEG; None for non-images/blank frames."""
+    if not data or not data.startswith(b"\xff\xd8\xff"):
+        return None
+    try:
+        img = Image.open(io.BytesIO(data)).convert("RGB")
+    except Exception:
+        return None
+    if _is_placeholder(img):
+        return None
+    w, h = img.size
+    side = min(w, h)
+    left, top = (w - side) // 2, (h - side) // 2
+    img = img.crop((left, top, left + side, top + side)).resize((512, 512))
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=82)
+    return buf.getvalue()
+
+
+def _bearing(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """Compass bearing (degrees) from point 1 to point 2."""
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dl = math.radians(lng2 - lng1)
+    x = math.sin(dl) * math.cos(p2)
+    y = math.cos(p1) * math.sin(p2) - math.sin(p1) * math.cos(p2) * math.cos(dl)
+    return (math.degrees(math.atan2(x, y)) + 360.0) % 360.0
+
+
+def _dist_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    dy = (lat2 - lat1) * 111000.0
+    dx = (lng2 - lng1) * 111000.0 * math.cos(math.radians(lat1))
+    return math.hypot(dx, dy)
+
+
+def _best_mapillary(lat: float, lng: float, images: list[dict],
+                    max_m: float = 50.0, max_off: float = 45.0) -> dict | None:
+    """Closest non-panoramic photo whose camera points at the house."""
+    best, best_score = None, None
+    for im in images:
+        if im.get("is_pano") or not im.get("thumb_1024_url"):
+            continue
+        geom = im.get("computed_geometry") or im.get("geometry") or {}
+        coords = geom.get("coordinates") or []
+        heading = im.get("computed_compass_angle", im.get("compass_angle"))
+        if len(coords) != 2 or heading is None:
+            continue
+        ilng, ilat = coords
+        d = _dist_m(ilat, ilng, lat, lng)
+        if d > max_m:
+            continue
+        off = abs((_bearing(ilat, ilng, lat, lng) - heading + 180.0) % 360.0
+                  - 180.0)
+        if off > max_off:
+            continue
+        score = d + off / 2.0
+        if best_score is None or score < best_score:
+            best, best_score = im, score
+    return best
+
+
+def _mapillary_image(lat: float, lng: float, radius_m: float = 50.0) -> bytes | None:
+    """Street-level Mapillary photo facing the house (free; needs a token)."""
+    token = os.environ.get("MAPILLARY_ACCESS_TOKEN", "")
+    if not token:
+        return None
+    dlat = radius_m / 111000.0
+    dlng = radius_m / (111000.0 * max(0.2, math.cos(math.radians(lat))))
+    params = {
+        "access_token": token,
+        "fields": "id,thumb_1024_url,computed_geometry,geometry,"
+                  "computed_compass_angle,compass_angle,is_pano",
+        "bbox": f"{lng - dlng},{lat - dlat},{lng + dlng},{lat + dlat}",
+        "limit": "50",
+    }
+    raw = _http_get(_MAPILLARY_IMAGES + "?" + urllib.parse.urlencode(params))
+    if not raw:
+        return None
+    try:
+        images = json.loads(raw.decode()).get("data") or []
+    except Exception:
+        return None
+    pick = _best_mapillary(lat, lng, images, max_m=radius_m)
+    if not pick:
+        return None
+    return _square_jpeg(_http_get(pick["thumb_1024_url"], timeout=30))
+
+
+def _streetview_image(lat: float, lng: float) -> bytes | None:
+    """Google Street View photo aimed at the house (paid; needs a key).
+
+    The metadata lookup is free, so the billed image request only happens
+    when a panorama actually exists near the point."""
+    key = os.environ.get("GOOGLE_MAPS_API_KEY", "")
+    if not key:
+        return None
+    loc = f"{lat},{lng}"
+    meta = _http_get(_STREETVIEW + "/metadata?" + urllib.parse.urlencode(
+        {"location": loc, "source": "outdoor", "key": key}))
+    try:
+        if not meta or json.loads(meta.decode()).get("status") != "OK":
+            return None
+    except Exception:
+        return None
+    url = _STREETVIEW + "?" + urllib.parse.urlencode({
+        "location": loc, "size": "640x640", "fov": "80", "pitch": "20",
+        "source": "outdoor", "return_error_code": "true", "key": key})
+    return _square_jpeg(_http_get(url, timeout=30))
+
+
 def _tile_frac(lat: float, lng: float, z: int):
     """Containing tile plus the target's fractional position inside it."""
     n = 2 ** z
@@ -538,7 +663,9 @@ def roof_image(lat: float, lng: float, z: int = 20) -> tuple[bytes | None, int, 
 
     Where Esri has no coverage at the requested zoom it serves placeholder
     tiles; step down to z-1 then z-2, then fall back to free USGS NAIP aerial
-    photos before giving up. Never grade a placeholder as if it were a roof.
+    photos. With no aerial view at all, try a street-level photo (Mapillary,
+    then Google Street View) before giving up. Never grade a placeholder as
+    if it were a roof. Street-level views report zoom 0.
     Returns (JPEG bytes or None, zoom used, imagery source).
     """
     for zz in (z, z - 1, z - 2):
@@ -548,6 +675,12 @@ def roof_image(lat: float, lng: float, z: int = 20) -> tuple[bytes | None, int, 
     usgs = _usgs_image(lat, lng)
     if usgs:
         return usgs, 18, "usgs"
+    mly = _mapillary_image(lat, lng)
+    if mly:
+        return mly, 0, "mapillary"
+    sv = _streetview_image(lat, lng)
+    if sv:
+        return sv, 0, "streetview"
     return None, z, "none"
 
 
@@ -564,6 +697,8 @@ GRADE_PROMPT = """You are a senior forensic roof inspector grading residential r
 
 ABANDONED / DERELICT RULE: if the target property is clearly abandoned or derelict — collapsed or fire-gutted structure, boarded-up and decaying, or a vacant lot with no building at the target point — set "abandoned": true and grade 0. Do not mark a merely old or worn-but-occupied home as abandoned.
 
+STREET-LEVEL RULE: an image may be labeled as a street-level photo taken from the road instead of an aerial view. Grade only the roof slopes visible in it, never guess about hidden slopes, and set confidence no higher than "medium".
+
 CRITICAL DISCRIMINATION RULES:
 1. Solar panels: do NOT count solar arrays or mounting brackets as damage or discoloration. Grade only the exposed roof surface.
 2. Shadows: differentiate sharp tree-limb shadows from sagging or missing shingles. Check whether the dark shape matches a tree next to the house.
@@ -577,9 +712,13 @@ _GEMINI_URL = ("https://generativelanguage.googleapis.com/v1beta/models/"
                "gemini-3.1-flash-lite:generateContent")
 
 
-def _gemini_call(api_key: str, image_b64_list: list[str]) -> str | None:
+def _gemini_call(api_key: str, image_b64_list: list[str],
+                 sources: list[str] | None = None) -> str | None:
     parts: list[dict] = [{"text": GRADE_PROMPT}]
-    for b64 in image_b64_list:
+    for i, b64 in enumerate(image_b64_list):
+        if sources and i < len(sources) and sources[i] in STREET_SOURCES:
+            parts.append({"text": f"Image {i + 1}: street-level photo "
+                                  "taken from the road."})
         parts.append({"inline_data": {"mime_type": "image/jpeg", "data": b64}})
     payload = {
         "contents": [{"parts": parts}],
@@ -703,7 +842,7 @@ def _gemini_json(api_key: str, parts: list[dict], schema: dict,
         return None
 
 
-PINPOINT_PROMPT = """You are a senior forensic roof inspector. This close-up aerial image shows ONE roof, centered in the frame, graded {grade}/5 on the Roof Tru Scale ({verdict}). Wide-view evidence: {evidence}
+PINPOINT_PROMPT = """You are a senior forensic roof inspector. This {view} shows ONE roof, centered in the frame, graded {grade}/5 on the Roof Tru Scale ({verdict}). Wide-view evidence: {evidence}
 
 Do two things and return ONLY JSON:
 
@@ -794,14 +933,19 @@ def localize_damage(api_key: str, houses: list[dict], progress=None):
             progress("pinpoint", i, total,
                      f"Pinpointing damage… {i}/{total}")
         try:
-            z = min((h.get("zoom") or 19) + 1, 20)
-            closeup = _centered_esri(h["lat"], h["lng"], z)
+            street = h.get("imagery") in STREET_SOURCES
+            closeup = None
+            if not street:
+                z = min((h.get("zoom") or 19) + 1, 20)
+                closeup = _centered_esri(h["lat"], h["lng"], z)
             if not closeup:
                 closeup = base64.b64decode(h["image_b64"])
             b64 = base64.b64encode(closeup).decode()
             verdict = "FAILING — needs replacement" if h["grade"] == 1 \
                 else "WORN — needs repair soon"
             prompt = PINPOINT_PROMPT.format(
+                view=("street-level photo taken from the road" if street
+                      else "close-up aerial image"),
                 grade=h["grade"], verdict=verdict,
                 evidence="; ".join(h.get("evidence") or ["visible wear"]))
             res = _gemini_json(
@@ -891,10 +1035,12 @@ def grade_roofs(api_key: str, houses: list[dict], progress=None,
         if grader:
             grades = grader([c["image_b64"] for c in chunk])
         else:
-            txt = _gemini_call(api_key, [c["image_b64"] for c in chunk])
+            imgs = [c["image_b64"] for c in chunk]
+            srcs = [c.get("imagery", "") for c in chunk]
+            txt = _gemini_call(api_key, imgs, srcs)
             grades = _parse_grades(txt, len(chunk))
             if grades is None:  # one retry
-                txt = _gemini_call(api_key, [c["image_b64"] for c in chunk])
+                txt = _gemini_call(api_key, imgs, srcs)
                 grades = _parse_grades(txt, len(chunk))
         out = {}
         for h, g in zip(chunk, grades or []):
@@ -923,7 +1069,7 @@ def grade_roofs(api_key: str, houses: list[dict], progress=None,
     return houses
 
 
-PRESCREEN_PROMPT = """You are a roof triage assistant. For EACH aerial image in order, reply with ONLY a JSON array of integers — one per image — rating visible roof condition 1 (pristine) to 5 (severe damage). Use 0 when the roof cannot be seen at all (heavy tree cover, no building visible). Solar panels are NOT damage. Example: [2,0,4]"""
+PRESCREEN_PROMPT = """You are a roof triage assistant. For EACH image in order (most are aerial views; a few may be street-level photos of the house), reply with ONLY a JSON array of integers — one per image — rating visible roof condition 1 (pristine) to 5 (severe damage). Use 0 when the roof cannot be seen at all (heavy tree cover, no building visible). Solar panels are NOT damage. Example: [2,0,4]"""
 
 
 def _prescreen_call(api_key: str, b64_list: list[str]) -> list[int] | None:

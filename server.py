@@ -584,6 +584,17 @@ def _cache_put(zipcode: str, count: int, payload: dict):
         conn.close()
 
 
+def _cacheable(payload: dict) -> dict:
+    """Copy of a scan payload safe to persist: Google Street View photos are
+    served live only, never stored, so cached leads keep just the link."""
+    leads = []
+    for l in payload.get("leads") or []:
+        if l.get("imagery") == "streetview":
+            l = {**l, "img": "", "damage_img": ""}
+        leads.append(l)
+    return {**payload, "leads": leads}
+
+
 def _seen_cells(user_id: str | None, zipcode: str) -> set:
     """~35m roof cells already shown to this customer for this ZIP."""
     if not user_id:
@@ -685,7 +696,7 @@ def _run_houses(job_id: str, houses: list[dict], area: str,
         payload = {"zip": cache[0] if cache else "", "area": area,
                    "leads": leads, "scanned_at": time.time()}
         if cache:
-            _cache_put(cache[0], cache[1], payload)
+            _cache_put(cache[0], cache[1], _cacheable(payload))
             _record_seen(user_id, cache[0], houses)
         _set_job(job_id, status="done", leads=leads, area=area,
                  msg=f"Done — {len(leads)} damaged roofs found.")
