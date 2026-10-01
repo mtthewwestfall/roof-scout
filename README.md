@@ -1,4 +1,6 @@
-# GetVeridataNow — roof leads, verified from above
+# Roof Scout — roof leads, verified from above
+
+Live at **https://getveridatenow.com**.
 
 Type in a zip code — get back a ranked list of residential roofs that need work.
 
@@ -15,7 +17,14 @@ pip install -r requirements.txt
 GEMINI_API_KEY=... python server.py
 ```
 
-**Deploy (Railway)**: `Procfile` runs gunicorn. Set `GEMINI_API_KEY` in the service variables.
+**Deploy (Railway)**: `Procfile` runs gunicorn. Service variables:
+- `GEMINI_API_KEY` (required) — roof grading
+- `DB_PATH` — SQLite path on the mounted volume (defaults to `/data/roofscout.db` when `/data` exists)
+- `ADMIN_PASSWORD` (optional) — password gate for `/admin`; the owner account can always reach it after logging in
+
+**Domain**: `getveridatenow.com` is a Railway custom domain on the `roof-scout` service. DNS lives at Porkbun:
+- `ALIAS @ → <railway target>.up.railway.app` (Porkbun has no apex CNAME; use ALIAS)
+- `TXT _railway-verify → railway-verify=…` (ownership token shown in Railway → Settings → Networking)
 
 **Notes**
 - Grades are AI estimates from aerial imagery — verify on site before quoting work.
