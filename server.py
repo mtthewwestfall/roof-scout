@@ -139,6 +139,13 @@ def _db():
         user_id TEXT NOT NULL, lead_key TEXT NOT NULL,
         unlocked_at REAL NOT NULL,
         PRIMARY KEY (user_id, lead_key))""")
+    # Roofs already shown to a customer per ZIP (~35m cells), so repeat
+    # scans rotate to new rooftops instead of re-showing the same ones.
+    conn.execute("""CREATE TABLE IF NOT EXISTS scan_seen (
+        user_id TEXT NOT NULL, zip TEXT NOT NULL,
+        lat_r INTEGER NOT NULL, lng_r INTEGER NOT NULL,
+        created_at REAL NOT NULL,
+        PRIMARY KEY (user_id, zip, lat_r, lng_r))""")
     # Trial/plan columns (added after launch; migrate old DBs in place).
     for col in (
             "plan TEXT NOT NULL DEFAULT 'trial'",
@@ -577,13 +584,44 @@ def _cache_put(zipcode: str, count: int, payload: dict):
         conn.close()
 
 
+def _seen_cells(user_id: str | None, zipcode: str) -> set:
+    """~35m roof cells already shown to this customer for this ZIP."""
+    if not user_id:
+        return set()
+    conn = _db()
+    try:
+        rows = conn.execute(
+            "SELECT lat_r, lng_r FROM scan_seen WHERE user_id=? AND zip=?",
+            (user_id, zipcode)).fetchall()
+    finally:
+        conn.close()
+    return set(rows)
+
+
+def _record_seen(user_id: str | None, zipcode: str, houses: list[dict]):
+    if not user_id or not houses:
+        return
+    conn = _db()
+    try:
+        now = time.time()
+        conn.executemany(
+            "INSERT OR IGNORE INTO scan_seen"
+            " (user_id, zip, lat_r, lng_r, created_at) VALUES (?,?,?,?,?)",
+            [(user_id, zipcode,
+              round(h["lat"] * 3000), round(h["lng"] * 3000), now)
+             for h in houses if h.get("lat") is not None])
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _set_job(job_id: str, **kw):
     with _jobs_lock:
         _jobs[job_id].update(kw)
 
 
 def _run_houses(job_id: str, houses: list[dict], area: str,
-               cache: tuple | None = None, grader=None):
+               cache: tuple | None = None, grader=None, user_id=None):
     """Imagery + grading + sort tail, shared by zip and single-address scans."""
     try:
         def progress(phase, done, total, msg):
@@ -636,13 +674,15 @@ def _run_houses(job_id: str, houses: list[dict], area: str,
                    "leads": leads, "scanned_at": time.time()}
         if cache:
             _cache_put(cache[0], cache[1], payload)
+            _record_seen(user_id, cache[0], houses)
         _set_job(job_id, status="done", leads=leads, area=area,
                  msg=f"Done — {len(leads)} roofs graded.")
     except Exception as e:
         _fail_job(job_id, f"Scan failed: {e}. Your scan was refunded.")
 
 
-def _run_scan(job_id: str, zipcode: str, count: int, grader=None):
+def _run_scan(job_id: str, zipcode: str, count: int, user_id=None,
+              grader=None, prescreener=None):
     try:
         def progress(phase, done, total, msg):
             _set_job(job_id, phase=phase, done=done, total=total, msg=msg)
@@ -655,15 +695,35 @@ def _run_scan(job_id: str, zipcode: str, count: int, grader=None):
             return
         _set_job(job_id, area=center[2])
 
-        houses = pipeline.sample_roofs(zipcode, center, count, progress)
+        # Rotation: skip roofs already shown to this customer; when every
+        # known candidate has been shown, start a fresh pass.
+        exclude = _seen_cells(user_id, zipcode)
+        cands = pipeline.candidate_roofs(zipcode, center, count, progress,
+                                         exclude_cells=exclude)
+        if not cands and exclude:
+            cands = pipeline.candidate_roofs(zipcode, center, count, progress)
+        if not cands:
+            _fail_job(job_id, "No addresses found near that zip. Try another."
+                      " Your scan was refunded.")
+            return
+        # Damage pre-screen: cheap triage over the wide candidate pool,
+        # then deep-dive only the worst-looking roofs.
+        if GEMINI_KEY or grader or prescreener:
+            houses = pipeline.prescreen_damage(GEMINI_KEY, cands, count,
+                                               progress,
+                                               prescreener=prescreener)
+        else:
+            # No grader available (local dev without API key): geographic
+            # stride through the rotation-aware candidate pool.
+            houses = pipeline._stride_fallback(cands, count)
         if not houses:
             _fail_job(job_id, "No addresses found near that zip. Try another."
                       " Your scan was refunded.")
             return
         for h in houses:
-            h["key"] = h["address"] + "|" + h["postcode"]
+            h["key"] = (h.get("address") or "") + "|" + h.get("postcode", "")
         _run_houses(job_id, houses, center[2], cache=(zipcode, count),
-                    grader=grader)
+                    grader=grader, user_id=user_id)
     except Exception as e:
         _fail_job(job_id, f"Scan failed: {e}. Your scan was refunded.")
 
@@ -722,8 +782,12 @@ def start_scan():
         if blocked:
             return blocked
         quota = use_scan()
-        cached = _cache_get(zipcode, count)
+        # Rotation: a cached result is only served when this customer has
+        # NOT seen those roofs yet; otherwise a fresh scan covers new roofs.
+        seen = _seen_cells(user["id"], zipcode)
+        cached = None if seen else _cache_get(zipcode, count)
         if cached:
+            _record_seen(user["id"], zipcode, cached.get("leads") or [])
             conn = _db()
             try:
                 leads = _shape_leads(conn, cached.get("leads") or [], user)
@@ -739,7 +803,8 @@ def start_scan():
             _jobs[job_id] = {"status": "running", "phase": "start", "done": 0,
                              "total": count, "msg": "Starting…", "zip": zipcode,
                              "single": False, "owner": user["id"]}
-        t = threading.Thread(target=_run_scan, args=(job_id, zipcode, count),
+        t = threading.Thread(target=_run_scan,
+                             args=(job_id, zipcode, count, user["id"]),
                              daemon=True)
         t.start()
         return jsonify({"ok": True, "job_id": job_id, "quota": quota})

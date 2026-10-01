@@ -232,6 +232,87 @@ def geocode_address(query: str):
     return _census_geocode(query)
 
 
+def _cell_of(lat: float, lng: float) -> tuple[int, int]:
+    # ~35m roof cell; rotation + dedup granularity.
+    return (round(lat * 3000), round(lng * 3000))
+
+
+def _footprint_pool(zipcode: str, center, limit: int) -> list[dict]:
+    """Deduplicated Overpass building footprints (one per ~35m cell)."""
+    lat0, lng0 = center[0], center[1]
+    try:
+        blds = _overpass_buildings(zipcode, lat0, lng0, limit=limit)
+    except Exception:
+        blds = []
+    seen: set[tuple[int, int]] = set()
+    uniq = []
+    for b in blds:
+        cell = _cell_of(b["lat"], b["lng"])
+        if cell in seen:
+            continue
+        seen.add(cell)
+        uniq.append(b)
+    uniq.sort(key=lambda b: (b["lat"], b["lng"]))
+    return uniq
+
+
+def _shape_houses(buildings: list[dict], ctx: dict, city: str,
+                  zipcode: str) -> list[dict]:
+    houses = []
+    for b in buildings:
+        houses.append({
+            "address": b.get("address") or "",
+            "city": city or ctx.get("city", ""),
+            "state": ctx.get("state", ""),
+            "postcode": zipcode,
+            "county": ctx.get("county", ""),
+            "area": "",
+            "lat": b["lat"],
+            "lng": b["lng"],
+            "building": b.get("building", ""),
+        })
+    return houses
+
+
+def candidate_roofs(zipcode: str, center, count: int, progress=None,
+                    exclude_cells=None) -> list[dict]:
+    """Full deduplicated candidate pool for rotation + damage triage.
+
+    Every footprint cell minus `exclude_cells` (roofs already shown to this
+    customer), topped up with grid points when Overpass is thin. House
+    dicts are shaped like sample_roofs() output.
+    """
+    exclude_cells = exclude_cells or set()
+    lat0, lng0, _display, city = center
+    ctx: dict = {}
+    pool = _footprint_pool(zipcode, center, 180)
+    if pool:
+        ctx = _area_context(lat0, lng0)
+    pool = [b for b in pool
+            if _cell_of(b["lat"], b["lng"]) not in exclude_cells]
+    houses = _shape_houses(pool, ctx, city, zipcode)
+    if len(houses) < count:
+        have = {_cell_of(h["lat"], h["lng"]) for h in houses} | exclude_cells
+        grid = _grid_points(zipcode, center, count - len(houses),
+                            progress=progress,
+                            base=len(houses), total=count)
+        for g in grid:
+            cell = _cell_of(g["lat"], g["lng"])
+            if cell in have:
+                continue
+            have.add(cell)
+            houses.append(g)
+    for h in houses:
+        h.setdefault("city", city or "")
+        h.setdefault("state", ctx.get("state", ""))
+        h.setdefault("postcode", zipcode)
+        h.setdefault("county", ctx.get("county", ""))
+        h.setdefault("area", "")
+    if progress:
+        progress("candidates", 1.0, f"{len(houses)} candidate roofs")
+    return houses
+
+
 def sample_roofs(zipcode: str, center, count: int, progress=None):
     """Roof-first sampling: every building footprint is a candidate roof.
 
@@ -250,39 +331,15 @@ def sample_roofs(zipcode: str, center, count: int, progress=None):
 
     note()
     ctx: dict = {}
-    try:
-        blds = _overpass_buildings(zipcode, lat0, lng0,
-                                   limit=max(count * 6, 120))
-    except Exception:
-        blds = []
-    if blds:
+    uniq = _footprint_pool(zipcode, center, max(count * 6, 120))
+    if uniq:
         ctx = _area_context(lat0, lng0)
-        # dedup: one roof per ~35m cell (split building parts collapse)
-        seen_cells: set[tuple[int, int]] = set()
-        uniq = []
-        for b in blds:
-            cell = (round(b["lat"] * 3000), round(b["lng"] * 3000))
-            if cell in seen_cells:
-                continue
-            seen_cells.add(cell)
-            uniq.append(b)
         # spread across the area: stride through lat-sorted footprints
-        uniq.sort(key=lambda b: (b["lat"], b["lng"]))
         stride = max(1, len(uniq) // max(count, 1))
         for b in uniq[::stride]:
             if len(found) >= count:
                 break
-            found.append({
-                "address": b["address"],
-                "city": city or ctx.get("city", ""),
-                "state": ctx.get("state", ""),
-                "postcode": zipcode,
-                "county": ctx.get("county", ""),
-                "area": "",
-                "lat": b["lat"],
-                "lng": b["lng"],
-                "building": b.get("building", ""),
-            })
+            found.extend(_shape_houses([b], ctx, city, zipcode))
             note()
     if len(found) < count:
         found.extend(_grid_points(zipcode, center, count - len(found),
@@ -819,6 +876,104 @@ def grade_roofs(api_key: str, houses: list[dict], progress=None,
         if v:
             h.update(v)
     return houses
+
+
+PRESCREEN_PROMPT = """You are a roof triage assistant. For EACH aerial image in order, reply with ONLY a JSON array of integers — one per image — rating visible roof condition 1 (pristine) to 5 (severe damage). Use 0 when the roof cannot be seen at all (heavy tree cover, no building visible). Solar panels are NOT damage. Example: [2,0,4]"""
+
+
+def _prescreen_call(api_key: str, b64_list: list[str]) -> list[int] | None:
+    parts = [{"text": PRESCREEN_PROMPT}] + [
+        {"inline_data": {"mime_type": "image/jpeg", "data": b}}
+        for b in b64_list]
+    schema = {"type": "ARRAY", "items": {"type": "INTEGER"}}
+    try:
+        out = _gemini_json(api_key, parts, schema, max_tokens=256)
+    except Exception:
+        return None
+    if not isinstance(out, list):
+        return None
+    vals = []
+    for v in out:
+        try:
+            vals.append(max(0, min(5, int(v))))
+        except (TypeError, ValueError):
+            vals.append(0)
+    return vals
+
+
+def _stride_fallback(cands: list[dict], count: int) -> list[dict]:
+    if len(cands) <= count:
+        return list(cands)
+    stride = len(cands) / count
+    return [cands[int(i * stride)] for i in range(count)]
+
+
+def prescreen_damage(api_key: str, cands: list[dict], count: int,
+                     progress=None, prescreener=None) -> list[dict]:
+    """Cheap triage: keep the `count` worst-looking roofs out of `cands`.
+
+    Fetches a z=19 crop per candidate, scores condition 0-5 with one tiny
+    Gemini call per 8 roofs, and returns the worst `count` (grade 0 /
+    unverifiable sinks below visible damage so tree cover can't crowd out
+    real leads). Falls back to geographic stride when triage fails.
+    prescreener() is a test hook like grader().
+    """
+    total = len(cands)
+    if total == 0 or count <= 0:
+        return []
+    if total <= count:
+        return list(cands)
+    if progress:
+        progress("prescreen", 0, total, f"Pre-screening {total} roofs…")
+
+    def grab(c):
+        img, _zoom, _src = roof_image(c["lat"], c["lng"], z=19)
+        if img:
+            c["image_b64"] = base64.b64encode(img).decode()
+        return c
+
+    with ThreadPoolExecutor(max_workers=10) as ex:
+        list(ex.map(grab, cands))
+    with_img = [c for c in cands if c.get("image_b64")]
+    if not with_img:
+        return _stride_fallback(cands, count)
+
+    index_of = {id(c): i for i, c in enumerate(cands)}
+    scored: dict[int, int] = {}
+    batches = [with_img[i:i + 8] for i in range(0, len(with_img), 8)]
+    done = [0]
+    lock = threading.Lock()
+
+    def triage(batch):
+        b64s = [c["image_b64"] for c in batch]
+        if prescreener:
+            vals = prescreener(b64s)
+        else:
+            vals = _prescreen_call(api_key, b64s)
+            if vals is None:  # one retry
+                vals = _prescreen_call(api_key, b64s)
+        with lock:
+            if vals:
+                for c, v in zip(batch, vals):
+                    scored[index_of[id(c)]] = v
+            done[0] += len(batch)
+            if progress:
+                progress("prescreen", done[0], total,
+                         f"Pre-screening roofs… {done[0]}/{total}")
+
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        list(ex.map(triage, batches))
+    if not scored:
+        return _stride_fallback(cands, count)
+    # worst first; 0 (unverifiable) sinks below visible damage
+    ranked = sorted(scored, key=lambda i: (scored[i] == 0, -scored[i]))
+    picked = [cands[i] for i in ranked[:count]]
+    for c in picked:
+        c.pop("image_b64", None)
+    if progress:
+        progress("prescreen", 1.0,
+                 f"{len(picked)} roofs flagged for deep-dive")
+    return picked
 
 
 _GRADE_ORDER = {1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 0: 5}

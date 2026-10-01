@@ -3,12 +3,13 @@
 Run: cd /tmp/rsfix && python -m pytest tests/ -q
 """
 import json
+import os
 import sys
 import time
 
 import pytest
 
-sys.path.insert(0, "/tmp/rsfix")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pipeline
 import server
 
@@ -176,7 +177,7 @@ class TestCaps:
 
     def test_uncached_zip_scan_consumes_and_starts_job(self, app_client,
                                                       monkeypatch):
-        def fake_run(job_id, zipcode, count, grader=None):
+        def fake_run(job_id, zipcode, count, user_id=None, grader=None):
             server._set_job(job_id, status="done", leads=[], area="X")
         monkeypatch.setattr(server, "_run_scan", fake_run)
         signup(app_client, "t@x.com")
@@ -611,7 +612,7 @@ class TestIsolation:
         assert b.get("/api/scan/jobS").status_code == 403
 
     def test_scan_start_tags_owner(self, db, monkeypatch):
-        def fake_run(job_id, zipcode, count, grader=None):
+        def fake_run(job_id, zipcode, count, user_id=None, grader=None):
             server._set_job(job_id, status="done", leads=[], area="X")
         monkeypatch.setattr(server, "_run_scan", fake_run)
         a = server.app.test_client()
@@ -782,3 +783,108 @@ class TestUnlockRace:
         r = app_client.post("/api/leads/unlock", json={"lead_key": "k2"})
         assert r.status_code == 200
         assert r.get_json()["quota"]["unlocks_used"] == 2
+
+
+# ---------------- scan rotation (repeat-ZIP new roofs) ----------------
+
+class TestRotation:
+    def test_seen_roundtrip(self, db):
+        signup(server.app.test_client(), "rot@x.com")
+        uid = _user_id("rot@x.com")
+        server._record_seen(uid, "12345",
+                            [{"lat": 39.4781, "lng": -80.1935}])
+        cells = server._seen_cells(uid, "12345")
+        assert cells == {(round(39.4781 * 3000), round(-80.1935 * 3000))}
+        assert server._seen_cells(uid, "99999") == set()
+        assert server._seen_cells("other-id", "12345") == set()
+        assert server._seen_cells(None, "12345") == set()
+
+    def test_candidate_roofs_excludes_seen(self, monkeypatch):
+        pool = [{"lat": 39.0 + i * 0.001, "lng": -80.0, "address": "",
+                 "building": "house"} for i in range(10)]
+        monkeypatch.setattr(pipeline, "_overpass_buildings",
+                            lambda *a, **k: pool)
+        monkeypatch.setattr(pipeline, "_area_context", lambda *a: {})
+        monkeypatch.setattr(pipeline, "_grid_points", lambda *a, **k: [])
+        center = (39.0, -80.0, "X", "City")
+        allc = pipeline.candidate_roofs("12345", center, 5)
+        assert len(allc) == 10  # full pool goes to the pre-screen triage
+        excl = {pipeline._cell_of(allc[0]["lat"], allc[0]["lng"])}
+        again = pipeline.candidate_roofs("12345", center, 5,
+                                         exclude_cells=excl)
+        assert len(again) == 9
+        assert all(pipeline._cell_of(h["lat"], h["lng"]) not in excl
+                   for h in again)
+
+    def test_cached_scan_not_served_after_seen(self, app_client, monkeypatch):
+        # A cached ZIP is NOT served to a customer who already saw those
+        # roofs; they get a fresh scan job for new rooftops instead.
+        def fake_run(job_id, zipcode, count, user_id=None, grader=None):
+            server._set_job(job_id, status="done", leads=[], area="X")
+        monkeypatch.setattr(server, "_run_scan", fake_run)
+        signup(app_client, "rot@x.com")
+        uid = _user_id("rot@x.com")
+        server._record_seen(uid, "99999", [{"lat": 39.1, "lng": -80.1}])
+        server._cache_put("99999", 20, {"zip": "99999", "area": "X",
+                                        "leads": [], "scanned_at": 0.0})
+        r = app_client.post("/api/scan", json={"q": "99999", "count": 20})
+        body = r.get_json()
+        assert r.status_code == 200 and body.get("job_id")
+        assert "cached" not in body
+
+    def test_cached_scan_served_when_nothing_seen(self, app_client):
+        signup(app_client, "fresh@x.com")
+        seed_cache("12345", 20)
+        r = app_client.post("/api/scan", json={"q": "12345", "count": 20})
+        body = r.get_json()
+        assert r.status_code == 200 and body.get("cached") is True
+        # Serving the cached roofs records them as seen for this customer.
+        uid = _user_id("fresh@x.com")
+        assert server._seen_cells(uid, "12345")
+
+
+# ---------------- damage pre-screen ----------------
+
+class TestPrescreen:
+    def _cands(self, n):
+        return [{"lat": 39.0 + i * 0.002, "lng": -80.0,
+                 "address": f"{i} Main St", "postcode": "12345",
+                 "key": f"{i} Main St|12345"} for i in range(n)]
+
+    def test_picks_worst_first_zero_sinks(self, monkeypatch):
+        cands = self._cands(10)
+        monkeypatch.setattr(pipeline, "roof_image",
+                            lambda lat, lng, z=20: (b"img", z, "esri"))
+        vals = iter([1, 0, 5, 2, 0, 4, 1, 3, 2, 5])
+        out = pipeline.prescreen_damage(
+            "k", cands, 3,
+            prescreener=lambda b64s: [next(vals) for _ in b64s])
+        # scores idx0..9: 1,0,5,2,0,4,1,3,2,5 -> worst first, 0s last
+        assert [c["address"] for c in out] == ["2 Main St", "9 Main St",
+                                              "5 Main St"]
+        assert all("image_b64" not in c for c in out)
+
+    def test_falls_back_on_triage_failure(self, monkeypatch):
+        cands = self._cands(10)
+        monkeypatch.setattr(pipeline, "roof_image",
+                            lambda lat, lng, z=20: (b"img", z, "esri"))
+        out = pipeline.prescreen_damage("k", cands, 4,
+                                        prescreener=lambda b64s: None)
+        assert len(out) == 4  # geographic stride fallback
+
+    def test_falls_back_when_no_images(self, monkeypatch):
+        cands = self._cands(10)
+        monkeypatch.setattr(pipeline, "roof_image",
+                            lambda lat, lng, z=20: (None, z, "esri"))
+        out = pipeline.prescreen_damage("k", cands, 4,
+                                        prescreener=lambda b64s: [5] * len(b64s))
+        assert len(out) == 4
+
+    def test_empty_candidates(self):
+        assert pipeline.prescreen_damage("k", [], 5) == []
+
+    def test_passthrough_when_pool_small(self):
+        cands = self._cands(3)
+        out = pipeline.prescreen_damage("k", cands, 5,
+                                        prescreener=lambda b: [1] * len(b))
+        assert out == cands  # pool <= count: returned as-is
