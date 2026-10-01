@@ -53,6 +53,30 @@ body { margin: 0; background: var(--bg); color: var(--txt);
 .copybtn { margin-top: 8px; width: 100%; padding: 8px; border-radius: 8px;
   border: 1px dashed var(--line); background: none; color: var(--dim);
   cursor: pointer; font-size: 13px; }
+
+.co-strip { display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+  margin: 12px 0 4px; padding: 10px 12px; background: var(--card);
+  border: 1px solid var(--line); border-radius: 12px; }
+.co-label { color: var(--dim); font-size: 13px; }
+.co-strip input { padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line);
+  background: var(--bg); color: var(--txt); font-size: 14px; }
+#coName { width: 170px; } #coRep { width: 130px; } #coPhone { width: 140px; }
+
+.tabs { display: flex; gap: 8px; margin: 14px 0 4px; }
+.tab { padding: 9px 18px; border-radius: 20px; border: 1px solid var(--line);
+  background: var(--card); color: var(--dim); cursor: pointer; font-size: 14px; font-weight: 600; }
+.tab.active { background: var(--accent); color: #111; border-color: var(--accent); }
+
+.pitchbtn { margin-top: 8px; width: 100%; padding: 10px; border-radius: 8px;
+  border: none; background: var(--accent); color: #111; font-weight: 700;
+  cursor: pointer; font-size: 14px; }
+.pitch { margin-top: 10px; }
+.pitchtext { width: 100%; border-radius: 10px; border: 1px solid var(--line);
+  background: var(--bg); color: var(--txt); font-size: 13.5px; line-height: 1.55;
+  padding: 10px 12px; font-family: inherit; resize: vertical; white-space: pre-wrap; }
+.pitchrow { display: flex; gap: 10px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+.copypitch { padding: 8px 16px; border-radius: 8px; border: 1px solid var(--line);
+  background: rgba(255,255,255,.07); color: var(--txt); cursor: pointer; font-size: 13px; }
 footer { text-align: center; padding: 26px 16px 40px; color: var(--dim); font-size: 13px; }
 footer p { margin: 4px 0; }
 

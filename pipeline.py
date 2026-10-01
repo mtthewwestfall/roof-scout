@@ -105,6 +105,7 @@ def sample_addresses(zipcode: str, center, count: int, progress=None):
             "state": a.get("state", ""),
             "postcode": pc,
             "county": (a.get("county") or "").replace(" County", ""),
+            "area": a.get("suburb") or a.get("neighbourhood") or a.get("quarter") or "",
             "lat": float(d["lat"]),
             "lng": float(d["lon"]),
         })

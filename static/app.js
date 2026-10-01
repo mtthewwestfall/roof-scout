@@ -10,6 +10,63 @@
     .replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
   let pollTimer = null;
+  let lastLeads = [];
+  let activeTab = 'repair';
+
+  // Company info for pitch drafts — remembered on this device.
+  function company() {
+    return {
+      name: ($('coName').value || '').trim() || '[Your Company]',
+      rep: ($('coRep').value || '').trim() || '[Your Name]',
+      phone: ($('coPhone').value || '').trim() || '[Your Phone]',
+    };
+  }
+  function bindCompany() {
+    ['coName', 'coRep', 'coPhone'].forEach((id) => {
+      const el = $(id);
+      try { el.value = localStorage.getItem('gvn_' + id) || ''; } catch (e) {}
+      el.addEventListener('input', () => {
+        try { localStorage.setItem('gvn_' + id, el.value); } catch (e) {}
+        // refresh open pitch drafts with the new details
+        document.querySelectorAll('.pitchtext').forEach((t) => {
+          if (!t.dataset.edited) t.value = buildPitch(JSON.parse(t.dataset.lead), company());
+        });
+      });
+    });
+  }
+
+  const GRADE_WORD = {1: 'FAILING', 2: 'WORN'};
+  function buildPitch(l, co) {
+    const ev = (l.evidence || []).map((e) => '- ' + e).join('\n');
+    const loc = [l.address, l.city, l.state, l.postcode].filter(Boolean).join(', ');
+    const verdict = l.grade === 1
+      ? 'this roof is likely failing and should be replaced before the next major storm turns it into interior damage.'
+      : 'this roof is worn and likely needs repair soon, before small problems become expensive ones.';
+    return (
+`Free roof inspection — ${loc}
+
+Hi, I'm ${co.rep} with ${co.name} (${co.phone}).
+
+We were reviewing recent aerial imagery of the roof at ${loc} and spotted signs it needs attention:
+${ev || '- visible wear (see aerial photo)'}
+
+Our roof grade: ${l.grade}/5 (${GRADE_WORD[l.grade] || ''}) — ${verdict}
+
+I'd like to offer you a free, no-obligation roof inspection. Here's our standard checklist — edit it to fit your job:
+
+[ ] Shingle condition: missing, cracked, lifted, or curling shingles
+[ ] Granule loss, bald spots, and discoloration
+[ ] Flashing around chimneys, vents, skylights, and valleys
+[ ] Gutters, downspouts, and drainage
+[ ] Fascia, soffit, and drip edge
+[ ] Attic ventilation and daylight through the deck
+[ ] Interior ceilings for water stains or active leaks
+[ ] Photos of everything we find, plus a straight repair-vs-replace recommendation
+
+No pressure — if the roof turns out fine, we'll tell you that too.
+
+${co.name} · ${co.phone}`);
+  }
 
   function showErr(msg) {
     const e = $('formErr');
@@ -78,37 +135,70 @@
     }, 1500);
   }
 
-  function renderResults(payload) {
-    resetBtn();
-    $('progress').classList.add('hidden');
-    const leads = payload.leads || [];
-    $('resTitle').textContent =
-      (payload.area ? payload.area.split(',').slice(0, 2).join(',') : 'Results') +
-      ` — ${leads.length} roofs graded`;
-    const hot = leads.filter((l) => l.grade === 1 || l.grade === 2).length;
-    $('resSub').textContent = hot
-      ? `${hot} ${hot === 1 ? 'roof needs' : 'roofs need'} work soon — worst first.`
-      : 'No urgent roofs in this batch — try more roofs or another zip.';
+  function visibleLeads() {
+    return activeTab === 'repair'
+      ? lastLeads.filter((l) => l.grade === 1 || l.grade === 2)
+      : lastLeads;
+  }
+
+  function renderCards() {
+    const leads = visibleLeads();
     const cards = $('cards');
     cards.innerHTML = '';
+    if (!leads.length && activeTab === 'repair') {
+      cards.innerHTML = '<p class="dim">No roofs in this batch graded 1–2. Switch to “All roofs” to see the full scan.</p>';
+    }
     leads.forEach((l) => {
       const card = document.createElement('div');
       card.className = 'card';
       const ev = (l.evidence || []).map((e) => `<li>${esc(e)}</li>`).join('');
       const loc = [l.city, l.state, l.postcode].filter(Boolean).join(', ');
+      const bits = [];
+      if (l.area) bits.push(esc(l.area));
+      bits.push(esc(loc));
+      if (l.county) bits.push(esc(l.county) + ' Co.');
+      const isRepair = l.grade === 1 || l.grade === 2;
       card.innerHTML =
         `<img src="${esc(l.img)}" alt="Aerial view of ${esc(l.address)}" loading="lazy">` +
         `<div class="card-body">` +
         `<div class="card-top"><span class="grade g${l.grade}">${GRADE_LABEL[l.grade] || ''}</span>` +
         `<span class="dim">${esc(l.confidence || '')} confidence</span></div>` +
         `<div class="addr">${esc(l.address)}</div>` +
-        `<div class="sub">${esc(loc)}${l.county ? ' · ' + esc(l.county) + ' Co.' : ''}</div>` +
+        `<div class="sub">${bits.join(' · ')}</div>` +
+        `<div class="sub dim">Public record: residential address via OpenStreetMap · ` +
+        `Phone not publicly listed in free sources</div>` +
         (ev ? `<ul class="ev">${ev}</ul>` : '') +
         `<div class="links"><a href="${esc(l.maps_url)}" target="_blank" rel="noopener">Google Maps</a>` +
         `<a href="${esc(l.streetview_url)}" target="_blank" rel="noopener">Street View</a></div>` +
         `<button class="copybtn" data-addr="${esc(l.address + ', ' + loc)}">Copy address</button>` +
+        (isRepair ? `<button class="pitchbtn">Draft pitch</button>
+        <div class="pitch hidden"><textarea class="pitchtext" rows="16"></textarea>
+        <div class="pitchrow"><button class="copypitch">Copy pitch</button>
+        <span class="dim">Edit freely — drafts update when you change company info.</span></div></div>` : '') +
         `</div>`;
       cards.appendChild(card);
+      const pitchBtn = card.querySelector('.pitchbtn');
+      if (pitchBtn) {
+        const panel = card.querySelector('.pitch');
+        const ta = card.querySelector('.pitchtext');
+        ta.dataset.lead = JSON.stringify({address: l.address, city: l.city,
+          state: l.state, postcode: l.postcode, grade: l.grade, evidence: l.evidence});
+        pitchBtn.addEventListener('click', () => {
+          const opening = panel.classList.contains('hidden');
+          panel.classList.toggle('hidden');
+          if (opening && !ta.dataset.filled) {
+            ta.value = buildPitch(l, company());
+            ta.dataset.filled = '1';
+          }
+          pitchBtn.textContent = panel.classList.contains('hidden') ? 'Draft pitch' : 'Hide pitch';
+        });
+        ta.addEventListener('input', () => { ta.dataset.edited = '1'; });
+        card.querySelector('.copypitch').addEventListener('click', (e) => {
+          navigator.clipboard.writeText(ta.value).catch(() => {});
+          e.target.textContent = 'Copied ✓';
+          setTimeout(() => { e.target.textContent = 'Copy pitch'; }, 1500);
+        });
+      }
     });
     cards.querySelectorAll('.copybtn').forEach((b) =>
       b.addEventListener('click', () => {
@@ -116,9 +206,34 @@
         b.textContent = 'Copied ✓';
         setTimeout(() => { b.textContent = 'Copy address'; }, 1500);
       }));
+  }
+
+  function setTab(tab) {
+    activeTab = tab;
+    $('tabRepair').classList.toggle('active', tab === 'repair');
+    $('tabAll').classList.toggle('active', tab === 'all');
+    renderCards();
+  }
+
+  function renderResults(payload) {
+    resetBtn();
+    $('progress').classList.add('hidden');
+    lastLeads = payload.leads || [];
+    $('resTitle').textContent =
+      (payload.area ? payload.area.split(',').slice(0, 2).join(',') : 'Results') +
+      ` — ${lastLeads.length} roofs graded`;
+    const hot = lastLeads.filter((l) => l.grade === 1 || l.grade === 2).length;
+    $('resSub').textContent = hot
+      ? `${hot} ${hot === 1 ? 'roof needs' : 'roofs need'} work soon — worst first.`
+      : 'No urgent roofs in this batch — try more roofs or another zip.';
+    $('tabRepair').textContent = `🔨 Needs repair${hot ? ' (' + hot + ')' : ''}`;
+    setTab(hot ? 'repair' : 'all');
     $('results').classList.remove('hidden');
     $('results').scrollIntoView({behavior: 'smooth'});
   }
 
+  $('tabRepair').addEventListener('click', () => setTab('repair'));
+  $('tabAll').addEventListener('click', () => setTab('all'));
+  bindCompany();
   $('scanForm').addEventListener('submit', startScan);
 })();
