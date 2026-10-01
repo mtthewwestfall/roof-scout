@@ -3,13 +3,15 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RoofScout — Find roofs that need work</title>
+<title>GetVeridataNow — Roof leads, verified from above</title>
+<meta name="description" content="Type in a zip code. GetVeridataNow scans rooftops from aerial imagery, grades each roof 0-5, and hands roofing companies the worst ones first — with address, photo, and evidence.">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 <header class="hero">
-  <h1>🏠 RoofScout</h1>
-  <p class="tag">Type in a zip code. We scan the rooftops from above and grade every roof 0–5 — worst first.</p>
+  <div class="brand">✓ GetVeridataNow</div>
+  <h1>Every roof that needs work,<br>in any zip code.</h1>
+  <p class="tag">Type in a zip. We scan the rooftops from above, grade each roof 0–5, and hand you the worst ones first — address, aerial photo, and visual evidence included.</p>
   <form id="scanForm" class="scanbar">
     <input id="zipInput" inputmode="numeric" maxlength="5" placeholder="Zip code" autocomplete="postal-code">
     <select id="countSel">
@@ -38,7 +40,34 @@
   <div id="cards"></div>
 </section>
 
+<section class="how">
+  <h2>How it works</h2>
+  <div class="steps">
+    <div class="step"><div class="n">1</div><h3>Pick a territory</h3><p>Enter any US zip code and how many roofs to scan.</p></div>
+    <div class="step"><div class="n">2</div><h3>We fly over it</h3><p>Fresh aerial imagery is pulled for every address found in the zip.</p></div>
+    <div class="step"><div class="n">3</div><h3>AI grades each roof</h3><p>A 0–5 scale, worst first. 1 means failing, 5 means solid. Only visible damage counts — obscured roofs are marked unverifiable, never guessed.</p></div>
+    <div class="step"><div class="n">4</div><h3>You get the leads</h3><p>Ranked worst-first with the address, the aerial photo, evidence notes, and one-tap Google Maps links.</p></div>
+  </div>
+</section>
+
+<section class="pitch">
+  <h2>Why roofing companies need this</h2>
+  <p class="sub">Your crews are only as good as the doors they knock on.</p>
+  <div class="cards6">
+    <div class="pcard"><div class="ico">🎯</div><h3>Stop knocking blind</h3><p>Every address comes with a documented reason to be there. Walk up with the aerial photo in hand and show the homeowner their own roof.</p></div>
+    <div class="pcard"><div class="ico">⛈️</div><h3>Storm-chase any zip, any day</h3><p>You don't need a hailstorm to find worn roofs. Scan any territory on demand and build your own storm.</p></div>
+    <div class="pcard"><div class="ico">💰</div><h3>Your leads, not shared leads</h3><p>No $40–$80 lead fees, no racing five competitors to the same door. Generate your own exclusive territory.</p></div>
+    <div class="pcard"><div class="ico">📋</div><h3>Quote with confidence</h3><p>Grade, visual evidence, and Street View before you ever roll a truck. Know it's a 1 or a 2 before you quote.</p></div>
+    <div class="pcard"><div class="ico">🗺️</div><h3>Own your territory</h3><p>Scan zip by zip. Work the worst roofs first, then move down the list. Your next month of jobs, mapped.</p></div>
+    <div class="pcard"><div class="ico">⚡</div><h3>Minutes, not weeks</h3><p>A 20-roof scan finishes in minutes. No canvassing crews, no waiting on lead vendors.</p></div>
+  </div>
+  <div class="cta-row">
+    <a href="#scanForm" class="cta">Run your first scan — try your own zip ↑</a>
+  </div>
+</section>
+
 <footer>
+  <p>GetVeridataNow — roof leads, verified from above.</p>
   <p>Roof grades are AI estimates from aerial imagery — verify on site before quoting work.</p>
   <p class="dim">Imagery © Esri World Imagery · Addresses © OpenStreetMap contributors</p>
 </footer>
