@@ -439,22 +439,8 @@ class TestAdminTestRunner:
         assert res["ok"] is True
         assert res["total"] == 1
 
-    def test_test_runner_authorized_email_typo_allowed(self, app_client, monkeypatch):
-        signup(app_client, "mtthew.westfall@gmaiI.com")
-        r_get = app_client.get("/api/admin/test-results")
-        assert r_get.status_code == 200
-        assert r_get.get_json()["can_run_tests"] is True
-
-        import pytest
-        def fake_pytest_main(args, plugins=None):
-            return 0
-
-        monkeypatch.setattr(pytest, "main", fake_pytest_main)
-
-        r_post = app_client.post("/api/admin/run-tests")
-        assert r_post.status_code == 200
-        res = r_post.get_json()
-        assert res["ok"] is True
+    def test_allowed_test_emails_exact(self):
+        assert server.ALLOWED_TEST_EMAILS == {"mtthew.westfall@gmail.com"}
 
 
 # ---------------- admin password gate ----------------
