@@ -834,6 +834,18 @@ class TestRotation:
         far = max(abs(h["lat"] - 39.1) for h in out)
         assert far <= 0.1 + 1e-9
 
+    def test_vacant_buildings_dont_take_pool_slots(self, monkeypatch):
+        near_vacant = [{"lat": 39.0 + i * 0.0001, "lng": -80.0, "address": "",
+                        "building": "house", "vacant": True} for i in range(200)]
+        farther = [{"lat": 39.1 + i * 0.001, "lng": -80.0, "address": "",
+                    "building": "house"} for i in range(50)]
+        monkeypatch.setattr(pipeline, "_overpass_buildings",
+                            lambda *a, **k: near_vacant + farther)
+        monkeypatch.setattr(pipeline, "_area_context", lambda *a: {})
+        monkeypatch.setattr(pipeline, "_grid_points", lambda *a, **k: [])
+        out = pipeline.candidate_roofs("12345", (39.0, -80.0, "X", "City"), 20)
+        assert len(out) == 50 and not any(h["vacant"] for h in out)
+
     def test_thin_footprints_topped_up_to_200(self, monkeypatch):
         monkeypatch.setattr(pipeline, "_overpass_buildings",
                             lambda *a, **k: [])

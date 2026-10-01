@@ -338,7 +338,8 @@ def candidate_roofs(zipcode: str, center, count: int, progress=None,
     if pool:
         ctx = _area_context(lat0, lng0)
     pool = [b for b in pool
-            if _cell_of(b["lat"], b["lng"]) not in exclude_cells]
+            if not b.get("vacant")
+            and _cell_of(b["lat"], b["lng"]) not in exclude_cells]
     pool.sort(key=lambda b: (b["lat"] - lat0) ** 2 + (b["lng"] - lng0) ** 2)
     houses = _shape_houses(pool[:MICRO_SCAN_POOL], ctx, city, zipcode)
     want = max(count, MICRO_SCAN_POOL)
