@@ -66,15 +66,16 @@ _OVERPASS = ("https://overpass-api.de/api/interpreter",
              "https://overpass.kumi.systems/api/interpreter")
 
 
-def _overpass_buildings(zipcode: str, lat0: float, lng0: float, limit: int = 40):
-    """Real building footprints with address tags via Overpass (free, no key).
+def _overpass_buildings(zipcode: str, lat0: float, lng0: float, limit: int = 120):
+    """All building footprints in the area (roof-first, not address-first).
 
     Tries the postal_code area first, then a tight bbox around the zip center
     (Nominatim's zip bounding box is far too coarse for dense zips — a raw
-    bbox query can return tens of megabytes). Only buildings already carrying
-    addr:housenumber + addr:street are returned, so no reverse-geocoding is
-    needed for the mailable address."""
-    r = 2.5 / 111.0  # ~2.5km half-box around the zip center
+    bbox query can return tens of megabytes). Buildings already carrying
+    addr:housenumber + addr:street keep their address so no reverse-geocoding
+    is needed later; the rest get matched to addresses after grading, only
+    for roofs that actually need repair."""
+    r = 1.6 / 111.0  # ~1.6km half-box around the zip center
     cosla = max(0.2, math.cos(math.radians(lat0)))
     s, n = lat0 - r, lat0 + r
     w, e = lng0 - r / cosla, lng0 + r / cosla
@@ -83,11 +84,10 @@ def _overpass_buildings(zipcode: str, lat0: float, lng0: float, limit: int = 40)
         # PLZ), so intersect with the US boundary area.
         (f'[out:json][timeout:25];area["ISO3166-1"="US"][admin_level=2]->.us;'
          f'area["postal_code"="{zipcode}"]->.a;'
-         f'(way["building"]["addr:housenumber"]["addr:street"]'
-         f'(area.a)(area.us););'
+         f'(way["building"](area.a)(area.us););'
          f'out center tags {limit};'),
         (f'[out:json][timeout:25];'
-         f'(way["building"]["addr:housenumber"]["addr:street"]'
+         f'(way["building"]'
          f'({s},{w},{n},{e}););out center tags {limit};'),
     ]
     for q in queries:
@@ -101,10 +101,10 @@ def _overpass_buildings(zipcode: str, lat0: float, lng0: float, limit: int = 40)
                 out = []
                 for el in data.get("elements", []):
                     c, t = el.get("center"), el.get("tags", {})
-                    num, street = t.get("addr:housenumber"), t.get("addr:street")
-                    if not (c and num and street):
+                    if not c:
                         continue
-                    out.append({"address": f"{num} {street}",
+                    num, street = t.get("addr:housenumber"), t.get("addr:street")
+                    out.append({"address": f"{num} {street}" if num and street else "",
                                 "lat": float(c["lat"]), "lng": float(c["lon"]),
                                 "building": t.get("building", "")})
                 if out:
@@ -155,36 +155,46 @@ def geocode_address(query: str):
     }
 
 
-def sample_addresses(zipcode: str, center, count: int, progress=None):
-    """Overpass building footprints first (real rooftops with address tags),
-    topped up by the jittered-grid reverse-geocode fallback."""
+def sample_roofs(zipcode: str, center, count: int, progress=None):
+    """Roof-first sampling: every building footprint is a candidate roof.
+
+    Overpass footprints first (real rooftops — addresses attached only where
+    the tags already carry them), topped up by a jittered image-sweep grid
+    when Overpass is thin. Addresses get matched to damaged roofs AFTER
+    grading, via reverse-geocoding. Returns roof-point dicts."""
+
     lat0, lng0, _display, city = center
     found: list[dict] = []
-    seen: set[str] = set()
 
     def note():
         if progress:
-            progress("addresses", len(found), count,
-                     f"Finding buildings… {len(found)}/{count}")
+            progress("roofs", len(found), count,
+                     f"Finding rooftops… {len(found)}/{count}")
 
     note()
     ctx: dict = {}
     try:
-        blds = _overpass_buildings(zipcode, lat0, lng0, limit=max(count * 2, 40))
+        blds = _overpass_buildings(zipcode, lat0, lng0,
+                                   limit=max(count * 6, 120))
     except Exception:
         blds = []
     if blds:
         ctx = _area_context(lat0, lng0)
-        # spread across the zip: stride through lat-sorted buildings
-        blds.sort(key=lambda b: (b["lat"], b["lng"]))
-        stride = max(1, len(blds) // max(count * 2, 1))
-        for b in blds[::stride]:
+        # dedup: one roof per ~35m cell (split building parts collapse)
+        seen_cells: set[tuple[int, int]] = set()
+        uniq = []
+        for b in blds:
+            cell = (round(b["lat"] * 3000), round(b["lng"] * 3000))
+            if cell in seen_cells:
+                continue
+            seen_cells.add(cell)
+            uniq.append(b)
+        # spread across the area: stride through lat-sorted footprints
+        uniq.sort(key=lambda b: (b["lat"], b["lng"]))
+        stride = max(1, len(uniq) // max(count, 1))
+        for b in uniq[::stride]:
             if len(found) >= count:
                 break
-            key = b["address"].lower()
-            if key in seen:
-                continue
-            seen.add(key)
             found.append({
                 "address": b["address"],
                 "city": city or ctx.get("city", ""),
@@ -194,22 +204,33 @@ def sample_addresses(zipcode: str, center, count: int, progress=None):
                 "area": "",
                 "lat": b["lat"],
                 "lng": b["lng"],
+                "building": b.get("building", ""),
             })
             note()
     if len(found) < count:
-        found.extend(_grid_addresses(zipcode, center, count - len(found),
-                                     seen=seen, progress=progress,
-                                     base=len(found), total=count))
+        found.extend(_grid_points(zipcode, center, count - len(found),
+                                 progress=progress,
+                                 base=len(found), total=count))
+    for h in found:
+        h.setdefault("city", city or "")
+        h.setdefault("state", ctx.get("state", ""))
+        h.setdefault("postcode", zipcode)
+        h.setdefault("county", ctx.get("county", ""))
+        h.setdefault("area", "")
     return found
 
 
-def _grid_addresses(zipcode: str, center, count: int, progress=None,
-                    seen: set[str] | None = None, base: int = 0,
-                    total: int | None = None):
-    """Jittered-grid reverse-geocode sampling (fallback). Returns address dicts."""
+# Backwards-compatible alias (server used to call this).
+def sample_addresses(zipcode: str, center, count: int, progress=None):
+    return sample_roofs(zipcode, center, count, progress)
+
+
+def _grid_points(zipcode: str, center, count: int, progress=None,
+                 base: int = 0, total: int | None = None):
+    """Jittered-grid sweep points (fallback). Pure image search: no addresses
+    are resolved here — damaged roofs found on these cells get matched to
+    addresses after grading."""
     lat0, lng0 = center[0], center[1]
-    if seen is None:
-        seen = set()
     total = total or count
     # ~2.2km radius grid; denser near the middle
     radius_km = 2.2
@@ -227,40 +248,17 @@ def _grid_addresses(zipcode: str, center, count: int, progress=None,
             lat = lat0 + (dy * radius_km + jy * 0.12) / 111.0
             lng = lng0 + (dx * radius_km + jx * 0.12) / (111.0 * math.cos(math.radians(lat0)))
             pts.append((lat, lng))
-    # inside-out order: best addresses first
+    # inside-out order: best cells first
     pts.sort(key=lambda p: (p[0] - lat0) ** 2 + (p[1] - lng0) ** 2)
 
     found = []
-    for idx, (la, ln) in enumerate(pts):
+    for la, ln in pts:
         if len(found) >= count:
             break
         if progress:
-            progress("addresses", base + len(found), total,
-                     f"Finding addresses… {base + len(found)}/{total}")
-        d = _nominatim("/reverse", {"lat": la, "lon": ln, "format": "json",
-                                    "addressdetails": 1, "zoom": 18})
-        if not d or "address" not in d:
-            continue
-        a = d["address"]
-        house, road = a.get("house_number"), a.get("road")
-        pc = (a.get("postcode") or "")[:5]
-        if not house or not road or pc != zipcode:
-            continue
-        key = f"{house} {road}".lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        city = a.get("city") or a.get("town") or a.get("village") or a.get("hamlet") or ""
-        found.append({
-            "address": f"{house} {road}",
-            "city": city,
-            "state": a.get("state", ""),
-            "postcode": pc,
-            "county": (a.get("county") or "").replace(" County", ""),
-            "area": a.get("suburb") or a.get("neighbourhood") or a.get("quarter") or "",
-            "lat": float(d["lat"]),
-            "lng": float(d["lon"]),
-        })
+            progress("roofs", base + len(found), total,
+                     f"Sweeping imagery grid… {base + len(found)}/{total}")
+        found.append({"address": "", "lat": la, "lng": ln})
     return found
 
 
@@ -321,8 +319,46 @@ def _usgs_image(lat: float, lng: float, half_m: float = 60.0) -> bytes | None:
         return None
 
 
+def _tile_frac(lat: float, lng: float, z: int):
+    """Containing tile plus the target's fractional position inside it."""
+    n = 2 ** z
+    x = int((lng + 180.0) / 360.0 * n)
+    lr = math.radians(lat)
+    y = int((1.0 - math.log(math.tan(lr) + 1.0 / math.cos(lr)) / math.pi)
+            / 2.0 * n)
+    fx = (lng + 180.0) / 360.0 * n - x
+    fy = ((1.0 - math.log(math.tan(lr) + 1.0 / math.cos(lr)) / math.pi)
+          / 2.0 * n - y)
+    return x, y, fx, fy
+
+
+def _centered_esri(lat: float, lng: float, z: int):
+    """512x512 Esri crop mathematically centered on (lat, lng).
+
+    Fetches the 3x3 tile neighborhood around the containing tile and crops
+    a 512x512 window centered on the target pixel, so the roof being graded
+    sits in the middle of the frame. Returns JPEG bytes or None."""
+    x, y, fx, fy = _tile_frac(lat, lng, z)
+    xs = [xx for yy in (y - 1, y, y + 1) for xx in (x - 1, x, x + 1)]
+    ys = [yy for yy in (y - 1, y, y + 1) for xx in (x - 1, x, x + 1)]
+    with ThreadPoolExecutor(max_workers=9) as ex:
+        tiles = list(ex.map(_fetch_tile, [z] * 9, xs, ys))
+    if any(t is None for t in tiles):
+        return None
+    if _is_placeholder(tiles[4]):  # center tile = no coverage at this zoom
+        return None
+    canvas = Image.new("RGB", (768, 768))
+    for i, t in enumerate(tiles):
+        canvas.paste(t, ((i % 3) * 256, (i // 3) * 256))
+    cx, cy = int((1 + fx) * 256), int((1 + fy) * 256)
+    crop = canvas.crop((cx - 256, cy - 256, cx + 256, cy + 256))
+    buf = io.BytesIO()
+    crop.save(buf, "JPEG", quality=82)
+    return buf.getvalue()
+
+
 def roof_image(lat: float, lng: float, z: int = 20) -> tuple[bytes | None, int, str]:
-    """2x2 tile stitch (~60m across at z20) centered near the point.
+    """512x512 aerial view centered on the target rooftop.
 
     Where Esri has no coverage at the requested zoom it serves placeholder
     tiles; step down to z-1 then z-2, then fall back to free USGS NAIP aerial
@@ -330,22 +366,9 @@ def roof_image(lat: float, lng: float, z: int = 20) -> tuple[bytes | None, int, 
     Returns (JPEG bytes or None, zoom used, imagery source).
     """
     for zz in (z, z - 1, z - 2):
-        x, y = _tile_xy(lat, lng, zz)
-        with ThreadPoolExecutor(max_workers=4) as ex:
-            tiles = list(ex.map(_fetch_tile, [zz] * 4, [x, x + 1, x, x + 1],
-                                [y, y, y + 1, y + 1]))
-        if any(t is None for t in tiles):
-            continue
-        if all(_is_placeholder(t) for t in tiles):
-            continue
-        canvas = Image.new("RGB", (512, 512))
-        canvas.paste(tiles[0], (0, 0))
-        canvas.paste(tiles[1], (256, 0))
-        canvas.paste(tiles[2], (0, 256))
-        canvas.paste(tiles[3], (256, 256))
-        buf = io.BytesIO()
-        canvas.save(buf, "JPEG", quality=82)
-        return buf.getvalue(), zz, "esri"
+        img = _centered_esri(lat, lng, zz)
+        if img:
+            return img, zz, "esri"
     usgs = _usgs_image(lat, lng)
     if usgs:
         return usgs, 18, "usgs"
@@ -368,7 +391,7 @@ CRITICAL DISCRIMINATION RULES:
 2. Shadows: differentiate sharp tree-limb shadows from sagging or missing shingles. Check whether the dark shape matches a tree next to the house.
 3. Glare: high sun angles cause white reflective glare on metal or asphalt. Do not confuse glare with missing material.
 
-For each image also report: primary_material (asphalt shingle, metal, clay/concrete tile, slate, or membrane/flat), pitch_estimate (Flat, Low-slope, Medium, or Steep), obstruction_notes (tree cover, solar panels, shadows, glare — or empty if the view is clear), and damage_boxes — bounding boxes as [ymin, xmin, ymax, xmax] in 0-1000 normalized coordinates around each visible damage area (missing shingles, tarps, ponding, etc.), with a short label per box. Omit damage_boxes for healthy roofs.
+For each image also report: primary_material (asphalt shingle, metal, clay/concrete tile, slate, or membrane/flat), pitch_estimate (Flat, Low-slope, Medium, or Steep), obstruction_notes (tree cover, solar panels, shadows, glare — or empty if the view is clear), and damage_boxes — bounding boxes as [ymin, xmin, ymax, xmax] in 0-1000 normalized coordinates around each visible damage area (missing shingles, tarps, ponding, etc.), with a short label per box. For grades 1-2 include at least one damage_box around the worst-affected area. Omit damage_boxes for healthy roofs.
 
 The images are in order. Return a JSON array with exactly one object per image, in order: {"grade": 0-5, "confidence": "low|medium|high", "evidence": ["up to 3 short visual observations"], "primary_material": "...", "pitch_estimate": "...", "obstruction_notes": "...", "damage_boxes": [{"box_2d": [ymin,xmin,ymax,xmax], "label": "..."}]}. Return ONLY the JSON array."""
 
@@ -474,6 +497,201 @@ def _parse_grades(txt: str | None, n: int):
         return out
     except Exception:
         return None
+
+
+def _gemini_json(api_key: str, parts: list[dict], schema: dict,
+                 max_tokens: int = 4000):
+    """Single Gemini call returning parsed JSON (or None)."""
+    payload = {
+        "contents": [{"parts": parts}],
+        "generationConfig": {
+            "temperature": 0.1, "maxOutputTokens": max_tokens,
+            "responseMimeType": "application/json",
+            "responseSchema": schema,
+        },
+    }
+    req = urllib.request.Request(
+        _GEMINI_URL, data=json.dumps(payload).encode(), method="POST",
+        headers={"Content-Type": "application/json", "x-goog-api-key": api_key})
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            data = json.loads(resp.read().decode())
+        cands = data.get("candidates") or []
+        txt = "".join(p.get("text", "") for p in
+                      cands[0]["content"]["parts"] if p.get("text")).strip()
+        return json.loads(txt) if txt else None
+    except Exception:
+        return None
+
+
+PINPOINT_PROMPT = """You are a senior forensic roof inspector. This close-up aerial image shows ONE roof, centered in the frame, graded {grade}/5 on the Roof Tru Scale ({verdict}). Wide-view evidence: {evidence}
+
+Do two things and return ONLY JSON:
+
+1. "boxes": tight bounding boxes [ymin, xmin, ymax, xmax] in 0-1000 normalized coordinates around EACH distinct visible damage area on THIS roof (missing/cracked/lifted shingles, tarps, ponding, worst wear patches, rusted flashing). Boxes must be TIGHT — hug the damage, never the whole roof. If wear is diffuse, box the 1-3 worst patches. If you cannot localize any damage, return [].
+2. "repairs": for each problem, one line naming the issue and one line saying what a roofer would do to fix it. Plain language a homeowner understands. Max 6 items.
+
+Discrimination rules: solar panels are NOT damage. Tree shadows are NOT sagging. Sun glare is NOT missing material. Only mark what you can actually see."""
+
+_PINPOINT_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "boxes": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "box_2d": {"type": "ARRAY", "items": {"type": "INTEGER"},
+                               "minItems": 4, "maxItems": 4},
+                    "label": {"type": "STRING"},
+                },
+                "required": ["box_2d", "label"],
+            },
+        },
+        "repairs": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "issue": {"type": "STRING"},
+                    "fix": {"type": "STRING"},
+                },
+                "required": ["issue", "fix"],
+            },
+        },
+    },
+}
+
+
+def _valid_pinpoint_boxes(raw) -> list[dict]:
+    boxes = []
+    for b in (raw or [])[:6]:
+        if not isinstance(b, dict):
+            continue
+        bb = b.get("box_2d")
+        if not (isinstance(bb, list) and len(bb) == 4):
+            continue
+        try:
+            y0, x0, y1, x1 = (max(0, min(1000, int(v))) for v in bb)
+        except (ValueError, TypeError):
+            continue
+        if x1 <= x0 or y1 <= y0:
+            continue
+        area = (x1 - x0) * (y1 - y0) / 1e6  # fraction of the image
+        if not 0.002 <= area <= 0.80:  # not a speck, not the whole roof
+            continue
+        boxes.append({"box": [y0, x0, y1, x1],
+                      "label": str(b.get("label", "damage"))[:40]})
+    return boxes
+
+
+def _burn_boxes(img_bytes: bytes, boxes: list[dict]) -> bytes:
+    """Draw pinpoint boxes + labels onto the close-up. Returns JPEG bytes."""
+    from PIL import ImageDraw
+    img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+    w, h = img.size
+    d = ImageDraw.Draw(img)
+    for b in boxes:
+        y0, x0, y1, x1 = b["box"]
+        px = [x0 / 1000 * w, y0 / 1000 * h, x1 / 1000 * w, y1 / 1000 * h]
+        d.rectangle(px, outline=(255, 59, 48), width=4)
+        d.rectangle([px[0], px[1] - 18, px[0] + 8 * len(b["label"]) + 8,
+                     px[1]], fill=(255, 59, 48))
+        d.text((px[0] + 4, px[1] - 16), b["label"], fill=(255, 255, 255))
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=84)
+    return buf.getvalue()
+
+
+def localize_damage(api_key: str, houses: list[dict], progress=None):
+    """Pinpoint pass for damaged roofs: zoomed close-up centered on the roof,
+    tight damage boxes burned into the image, plus a plain-language repair
+    breakdown. Sets h["damage_img"] (data URI) and h["repair_breakdown"]."""
+    targets = [h for h in houses
+               if h.get("grade") in (1, 2) and h.get("image_b64")]
+    total = len(targets)
+    for i, h in enumerate(targets):
+        if progress:
+            progress("pinpoint", i, total,
+                     f"Pinpointing damage… {i}/{total}")
+        try:
+            z = min((h.get("zoom") or 19) + 1, 20)
+            closeup = _centered_esri(h["lat"], h["lng"], z)
+            if not closeup:
+                closeup = base64.b64decode(h["image_b64"])
+            b64 = base64.b64encode(closeup).decode()
+            verdict = "FAILING — needs replacement" if h["grade"] == 1 \
+                else "WORN — needs repair soon"
+            prompt = PINPOINT_PROMPT.format(
+                grade=h["grade"], verdict=verdict,
+                evidence="; ".join(h.get("evidence") or ["visible wear"]))
+            res = _gemini_json(
+                api_key,
+                [{"text": prompt},
+                 {"inline_data": {"mime_type": "image/jpeg", "data": b64}}],
+                _PINPOINT_SCHEMA)
+            boxes, repairs = [], []
+            if isinstance(res, dict):
+                boxes = _valid_pinpoint_boxes(res.get("boxes"))
+                for r in (res.get("repairs") or [])[:6]:
+                    if isinstance(r, dict) and r.get("issue"):
+                        repairs.append({
+                            "issue": str(r["issue"])[:200],
+                            "fix": str(r.get("fix", ""))[:200],
+                        })
+            if boxes:
+                marked = _burn_boxes(closeup, boxes)
+                h["damage_img"] = ("data:image/jpeg;base64," +
+                                   base64.b64encode(marked).decode())
+            if repairs:
+                h["repair_breakdown"] = repairs
+        except Exception:
+            continue
+    if progress:
+        progress("pinpoint", total, total, f"Pinpointed {total} roof(s).")
+    return houses
+
+
+def attach_addresses(houses: list[dict], progress=None):
+    """Match damaged roofs to mailable street addresses.
+
+    Only roofs graded 1-3 get reverse-geocoded (Nominatim, ~1 req/sec) —
+    healthy roofs don't need a letter. Roofs that already carry an address
+    (OSM tags, typed search) are left alone. Sets h["address"] etc. where a
+    house number + street is found; otherwise the card shows a map link so
+    the address can be verified by hand."""
+    targets = [h for h in houses
+               if h.get("grade") in (1, 2, 3) and not h.get("address")]
+    total = len(targets)
+    for i, h in enumerate(targets):
+        if progress:
+            progress("addresses", i, total,
+                     f"Matching addresses… {i}/{total}")
+        try:
+            d = _nominatim("/reverse",
+                           {"lat": h["lat"], "lon": h["lng"], "format": "json",
+                            "addressdetails": 1, "zoom": 18})
+            a = (d or {}).get("address", {}) if d else {}
+            house, road = a.get("house_number"), a.get("road")
+            if house and road:
+                h["address"] = f"{house} {road}"
+                h["city"] = (a.get("city") or a.get("town") or
+                             a.get("village") or a.get("hamlet") or
+                             h.get("city", ""))
+                h["state"] = a.get("state", "") or h.get("state", "")
+                h["postcode"] = ((a.get("postcode") or "")[:5] or
+                                 h.get("postcode", ""))
+                h["county"] = ((a.get("county") or "").replace(" County", "") or
+                               h.get("county", ""))
+                h["area"] = (a.get("suburb") or a.get("neighbourhood") or
+                             a.get("quarter") or h.get("area", ""))
+        except Exception:
+            pass
+        time.sleep(1.05)  # Nominatim usage policy
+    if progress:
+        progress("addresses", total, total,
+                 f"Matched {sum(1 for h in targets if h.get('address'))} address(es).")
+    return houses
 
 
 def grade_roofs(api_key: str, houses: list[dict], progress=None,

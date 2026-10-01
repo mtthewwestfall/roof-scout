@@ -93,6 +93,13 @@ def _run_houses(job_id: str, houses: list[dict], area: str,
             return
         pipeline.grade_roofs(GEMINI_KEY, houses, progress, grader=grader)
 
+        # Pinpoint pass: zoomed damage close-up + repair breakdown for
+        # damaged roofs (needs the graded image still in memory).
+        if GEMINI_KEY and grader is None:
+            pipeline.localize_damage(GEMINI_KEY, houses, progress)
+        # Roof-first matching: damaged roofs get mailable street addresses.
+        pipeline.attach_addresses(houses, progress)
+
         for h in houses:
             b64 = h.pop("image_b64", None)
             h["img"] = f"data:image/jpeg;base64,{b64}" if b64 else ""
@@ -124,7 +131,7 @@ def _run_scan(job_id: str, zipcode: str, count: int, grader=None):
             return
         _set_job(job_id, area=center[2])
 
-        houses = pipeline.sample_addresses(zipcode, center, count, progress)
+        houses = pipeline.sample_roofs(zipcode, center, count, progress)
         if not houses:
             _set_job(job_id, status="error",
                      error="No addresses found near that zip. Try another.")

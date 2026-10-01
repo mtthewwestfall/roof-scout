@@ -1,87 +1,392 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GetVeridataNow — Roof leads, verified from above</title>
-<meta name="description" content="Type in a zip code. GetVeridataNow scans rooftops from aerial imagery, grades each roof 0-5, and hands roofing companies the worst ones first — with address, photo, and evidence.">
-<link rel="stylesheet" href="/static/style.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Roof Scout — Find roofs that need repair</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display: flex; flex-direction: column; height: 100vh; background: #0f172a; color: #1e293b; }
+    header { background: #1e293b; color: white; padding: 12px 20px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #334155; gap: 12px; flex-wrap: wrap; }
+    .controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    input, button, select, textarea { padding: 9px 14px; border-radius: 6px; border: 1px solid #475569; font-size: 14px; font-family: inherit; }
+    input { width: 280px; background: #0f172a; color: white; }
+    button { background: #2563eb; color: white; border: none; cursor: pointer; font-weight: 600; }
+    button:hover { background: #1d4ed8; }
+    button:disabled { background: #64748b; cursor: not-allowed; }
+    button.ghost { background: #334155; }
+    button.ghost:hover { background: #475569; }
+    #workspace { display: flex; flex: 1; overflow: hidden; }
+    #map { flex: 1.2; height: 100%; min-height: 300px; }
+    #sidebar { flex: 1; overflow-y: auto; background: #f8fafc; padding: 16px; border-left: 1px solid #cbd5e1; }
+
+    .card { background: white; border-radius: 8px; padding: 16px; margin-bottom: 16px; border: 1px solid #e2e8f0; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+    .badge { display: inline-block; padding: 3px 8px; border-radius: 4px; font-weight: 700; font-size: 12px; color: white; }
+    .grade-1 { background: #dc2626; }
+    .grade-2 { background: #ea580c; }
+    .grade-3 { background: #d97706; }
+    .grade-4 { background: #16a34a; }
+    .grade-5 { background: #059669; }
+    .grade-0 { background: #64748b; }
+
+    .thumb { width: 100%; height: 170px; object-fit: cover; border-radius: 6px; margin: 10px 0 4px; border: 1px solid #cbd5e1; display: block; }
+    .imgcap { font-size: 11px; color: #64748b; margin-bottom: 6px; }
+    .section-title { font-size: 12px; text-transform: uppercase; font-weight: 700; color: #64748b; margin-top: 10px; }
+    ul { margin: 4px 0 10px 18px; padding: 0; font-size: 13px; color: #334155; }
+    .pitch-box { background: #f1f5f9; border-left: 3px solid #2563eb; padding: 8px 12px; font-size: 13px; font-style: italic; color: #334155; margin: 10px 0; border-radius: 0 4px 4px 0; }
+    .card-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+    .card-actions a, .card-actions button { font-size: 12px; text-decoration: none; padding: 6px 12px; border-radius: 4px; }
+    .btn-mail { background: #059669; color: white; border: none; font-weight: 600; cursor: pointer; }
+    .btn-mail:hover { background: #047857; }
+    .btn-link { background: #e2e8f0; color: #334155; }
+    .btn-edit { background: #e2e8f0; color: #334155; border: none; cursor: pointer; }
+    .pitch-editor { width: 100%; min-height: 130px; margin-top: 8px; font-size: 13px; border: 1px solid #cbd5e1; background: #fff; color: #1e293b; }
+    .hidden { display: none !important; }
+    .dim { color: #64748b; font-size: 12px; }
+
+    /* Company settings popover */
+    #coPanel { position: absolute; top: 60px; right: 16px; background: #1e293b; border: 1px solid #475569; border-radius: 8px; padding: 14px; z-index: 1000; width: 280px; }
+    #coPanel label { display: block; font-size: 12px; color: #94a3b8; margin: 8px 0 2px; }
+    #coPanel input { width: 100%; }
+
+    /* Print mailer preview overlay */
+    #printOverlay { position: fixed; inset: 0; background: rgba(15,23,42,.85); z-index: 2000; display: flex; align-items: flex-start; justify-content: center; overflow-y: auto; padding: 24px; }
+    #printSheet { background: white; max-width: 700px; width: 100%; border-radius: 8px; padding: 40px; color: #111; }
+    #printBar { position: sticky; top: 0; display: flex; gap: 10px; justify-content: flex-end; padding-bottom: 12px; }
+
+    #printSection { display: none; }
+    @media print {
+      body * { visibility: hidden; }
+      #printOverlay { position: static; background: none; padding: 0; display: block; }
+      #printSheet { max-width: none; border-radius: 0; padding: 0; }
+      #printBar { display: none; }
+      #printSection, #printSection * { visibility: visible; }
+      #printSection { display: block; position: absolute; left: 0; top: 0; width: 100%; }
+    }
+  </style>
 </head>
 <body>
-<header class="hero">
-  <div class="brand">✓ GetVeridataNow</div>
-  <h1>Every roof that needs work,<br>in any zip code.</h1>
-  <p class="tag">Type in a zip. We scan the rooftops from above, grade each roof 0–5, and hand you the worst ones first — address, aerial photo, and visual evidence included.</p>
-  <form id="scanForm" class="scanbar">
-    <input id="zipInput" placeholder="Zip code or street address" autocomplete="off">
-    <select id="countSel">
-      <option value="10">10 roofs</option>
-      <option value="20" selected>20 roofs</option>
-      <option value="30">30 roofs</option>
-    </select>
-    <button type="submit" id="scanBtn">Scan roofs</button>
-  </form>
-  <p id="formErr" class="err hidden"></p>
-</header>
 
-<section id="progress" class="hidden">
-  <div class="pbar"><div id="pfill"></div></div>
-  <p id="pmsg">Starting…</p>
-</section>
+  <header>
+    <div style="font-weight: 700; font-size: 18px;">🏠 Roof Scout <span style="font-weight: 400; font-size: 14px; color: #94a3b8;">| Find roofs that need repair</span></div>
+    <div class="controls">
+      <select id="searchMode" onchange="toggleMode()">
+        <option value="zip">ZIP Code Scan</option>
+        <option value="single">Single Address</option>
+      </select>
+      <input type="text" id="queryInput" placeholder="Enter 5-digit ZIP code (e.g. 26554)" />
+      <select id="countSel" title="Roofs to scan">
+        <option value="10">10 roofs</option>
+        <option value="20" selected>20 roofs</option>
+        <option value="30">30 roofs</option>
+      </select>
+      <button id="searchBtn" onclick="runSearch()">Scan ZIP Code</button>
+      <button class="ghost" id="csvBtn" onclick="exportCSV()" title="Download results as CSV">CSV</button>
+      <button class="ghost" id="coBtn" onclick="toggleCo()">Company</button>
+    </div>
+  </header>
+  <div id="coPanel" class="hidden">
+    <b style="font-size:14px;">Your company (prints on letters)</b>
+    <label>Company name</label><input id="coName" placeholder="Apex Roofing">
+    <label>Your name</label><input id="coRep" placeholder="Jane Smith">
+    <label>Phone</label><input id="coPhone" placeholder="(555) 123-4567">
+    <div style="margin-top:10px; display:flex; gap:8px;">
+      <button onclick="saveCompany()">Save</button>
+      <button class="ghost" onclick="toggleCo()">Close</button>
+    </div>
+  </div>
 
-<section id="results" class="hidden">
-  <div class="res-head">
-    <h2 id="resTitle"></h2>
-    <p id="resSub" class="dim"></p>
+  <div id="workspace">
+    <div id="map"></div>
+    <div id="sidebar">
+      <div id="statusNotice" style="color: #64748b; font-size: 14px; text-align: center; margin-top: 40px;">
+        Enter a ZIP code to scan its rooftops from satellite imagery, or switch to Single Address mode to inspect one roof.
+      </div>
+    </div>
   </div>
-  <div class="co-strip">
-    <span class="co-label">Your pitch drafts use:</span>
-    <input id="coName" placeholder="Company name" autocomplete="organization">
-    <input id="coRep" placeholder="Your name" autocomplete="name">
-    <input id="coPhone" placeholder="Phone" autocomplete="tel">
-  </div>
-  <div class="tabs">
-    <button id="tabRepair" class="tab active">🔨 Needs repair</button>
-    <button id="tabAll" class="tab">All roofs</button>
-  </div>
-  <div class="legend">
-    <span class="g g1">1 Failing</span><span class="g g2">2 Worn</span><span class="g g3">3 Aging</span><span class="g g4">4 Healthy</span><span class="g g5">5 Solid</span><span class="g g0">0 Can't tell</span>
-  </div>
-  <div id="cards"></div>
-</section>
 
-<section class="how">
-  <h2>How it works</h2>
-  <div class="steps">
-    <div class="step"><div class="n">1</div><h3>Pick a territory</h3><p>Enter any US zip code and how many roofs to scan.</p></div>
-    <div class="step"><div class="n">2</div><h3>We fly over it</h3><p>Fresh aerial imagery is pulled for every address found in the zip.</p></div>
-    <div class="step"><div class="n">3</div><h3>AI grades each roof</h3><p>A 0–5 scale, worst first. 1 means failing, 5 means solid. Only visible damage counts — obscured roofs are marked unverifiable, never guessed.</p></div>
-    <div class="step"><div class="n">4</div><h3>You get the leads</h3><p>Ranked worst-first with the address, the aerial photo, evidence notes, and one-tap Google Maps links.</p></div>
+  <!-- Print mailer preview -->
+  <div id="printOverlay" class="hidden">
+    <div id="printSheet">
+      <div id="printBar">
+        <button onclick="window.print()">🖨 Print</button>
+        <button class="ghost" onclick="closeMail()">Close</button>
+      </div>
+      <div id="printSection"></div>
+    </div>
   </div>
-</section>
 
-<section class="pitch">
-  <h2>Why roofing companies need this</h2>
-  <p class="sub">Your crews are only as good as the doors they knock on.</p>
-  <div class="cards6">
-    <div class="pcard"><div class="ico">🎯</div><h3>Stop knocking blind</h3><p>Every address comes with a documented reason to be there. Walk up with the aerial photo in hand and show the homeowner their own roof.</p></div>
-    <div class="pcard"><div class="ico">⛈️</div><h3>Storm-chase any zip, any day</h3><p>You don't need a hailstorm to find worn roofs. Scan any territory on demand and build your own storm.</p></div>
-    <div class="pcard"><div class="ico">💰</div><h3>Your leads, not shared leads</h3><p>No $40–$80 lead fees, no racing five competitors to the same door. Generate your own exclusive territory.</p></div>
-    <div class="pcard"><div class="ico">📋</div><h3>Quote with confidence</h3><p>Grade, visual evidence, and Street View before you ever roll a truck. Know it's a 1 or a 2 before you quote.</p></div>
-    <div class="pcard"><div class="ico">🗺️</div><h3>Own your territory</h3><p>Scan zip by zip. Work the worst roofs first, then move down the list. Your next month of jobs, mapped.</p></div>
-    <div class="pcard"><div class="ico">⚡</div><h3>Minutes, not weeks</h3><p>A 20-roof scan finishes in minutes. No canvassing crews, no waiting on lead vendors.</p></div>
-  </div>
-  <div class="cta-row">
-    <a href="#scanForm" class="cta">Run your first scan — try your own zip ↑</a>
-  </div>
-</section>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-<footer>
-  <p>GetVeridataNow — roof leads, verified from above.</p>
-  <p>Roof grades are AI estimates from aerial imagery — verify on site before quoting work.</p>
-  <p class="dim">Imagery © Esri World Imagery · USGS NAIP via the National Map · Addresses © OpenStreetMap contributors</p>
-</footer>
+    const map = L.map('map').setView([39.8283, -98.5795], 4);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+      { attribution: '&copy; OpenStreetMap contributors' }).addTo(map);
+    let markers = [];
+    let currentLeads = [];
 
-<script src="/static/app.js"></script>
+    const gradeColors = { 1: '#dc2626', 2: '#ea580c', 3: '#d97706', 4: '#16a34a', 5: '#059669', 0: '#64748b' };
+    const gradeLabels = { 1: 'Failing (Replace)', 2: 'Worn (Repair Soon)', 3: 'Aging (Watch)', 4: 'Healthy', 5: 'Solid', 0: 'Unclear' };
+
+    /* ---------- company info (for letters) ---------- */
+    function company() {
+      try {
+        const c = JSON.parse(localStorage.getItem('rs_company') || '{}');
+        return { name: c.name || '', rep: c.rep || '', phone: c.phone || '' };
+      } catch { return { name: '', rep: '', phone: '' }; }
+    }
+    function toggleCo() {
+      const p = $('coPanel');
+      p.classList.toggle('hidden');
+      if (!p.classList.contains('hidden')) {
+        const c = company();
+        $('coName').value = c.name; $('coRep').value = c.rep; $('coPhone').value = c.phone;
+      }
+    }
+    function saveCompany() {
+      localStorage.setItem('rs_company', JSON.stringify({
+        name: $('coName').value.trim(), rep: $('coRep').value.trim(), phone: $('coPhone').value.trim()
+      }));
+      toggleCo();
+    }
+
+    /* ---------- search modes ---------- */
+    function toggleMode() {
+      const mode = $('searchMode').value;
+      const input = $('queryInput');
+      const btn = $('searchBtn');
+      if (mode === 'single') {
+        input.placeholder = "Enter full address (e.g. 131 Arch St, Cumberland, MD 21502)";
+        btn.innerText = "Inspect Roof";
+        $('countSel').style.display = 'none';
+      } else {
+        input.placeholder = "Enter 5-digit ZIP code (e.g. 26554)";
+        btn.innerText = "Scan ZIP Code";
+        $('countSel').style.display = '';
+      }
+    }
+
+    async function runSearch() {
+      const mode = $('searchMode').value;
+      const val = $('queryInput').value.trim();
+      if (!val) return;
+      const btn = $('searchBtn');
+      const sidebar = $('sidebar');
+      btn.disabled = true;
+      btn.innerText = "Working…";
+      sidebar.innerHTML = `<div style="text-align:center; padding: 40px; color:#64748b;" id="progMsg">Starting…</div>`;
+      try {
+        const count = mode === 'single' ? 1 : parseInt($('countSel').value, 10);
+        const res = await fetch('/api/scan', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ q: val, count })
+        });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || "Search failed");
+        if (data.cached) { renderResults(data.payload.leads || [], data.payload.area); }
+        else { await pollJob(data.job_id); }
+      } catch (err) {
+        sidebar.innerHTML = `<div style="color:#dc2626; padding: 20px;"><b>Error:</b> ${esc(err.message)}</div>`;
+      } finally {
+        btn.disabled = false;
+        toggleMode();
+      }
+    }
+
+    async function pollJob(jobId) {
+      for (let i = 0; i < 180; i++) {
+        await new Promise((r) => setTimeout(r, 2000));
+        const res = await fetch('/api/scan/' + jobId);
+        const j = await res.json();
+        if (!j.ok) throw new Error(j.error || "Scan failed");
+        const pm = $('progMsg');
+        if (pm) pm.innerHTML = `${esc(j.msg || 'Working…')}<br><span class="dim">${j.done || 0}/${j.total || 0}</span>`;
+        if (j.status === 'done') { renderResults(j.leads || [], j.area); return; }
+        if (j.status === 'error') throw new Error(j.error || "Scan failed");
+      }
+      throw new Error("Scan timed out — try again.");
+    }
+
+    /* ---------- pitch hook ---------- */
+    function buildHook(l, co) {
+      const loc = [l.address, l.city, l.state, l.postcode].filter(Boolean).join(', ');
+      const who = co.name ? `I'm ${co.rep || 'with'} ${co.name}${co.phone ? ` (${co.phone})` : ''}. ` : '';
+      const verdict = l.grade === 1
+        ? 'this roof looks like it is failing and may need replacement before the next big storm.'
+        : 'this roof looks worn and likely needs repair soon, before small problems turn expensive.';
+      return `${who}We reviewed recent aerial imagery of the roof at ${loc || 'this property'} and ${verdict} I'd like to offer a free, no-obligation roof inspection — if the roof turns out fine, we'll tell you that too.`;
+    }
+
+    /* ---------- results ---------- */
+    function renderResults(leads, area) {
+      markers.forEach((m) => map.removeLayer(m));
+      markers = [];
+      currentLeads = leads;
+      const sidebar = $('sidebar');
+      sidebar.innerHTML = "";
+
+      const head = document.createElement('div');
+      head.style.cssText = 'margin-bottom:12px;color:#334155;font-size:14px;';
+      const damaged = leads.filter((l) => l.grade === 1 || l.grade === 2).length;
+      head.innerHTML = `<b>${leads.length}</b> roofs graded${area ? ` in <b>${esc(area)}</b>` : ''} · <b>${damaged}</b> need repair`;
+      sidebar.appendChild(head);
+
+      if (!leads.length) {
+        sidebar.innerHTML += "<p>No roofs identified.</p>";
+        return;
+      }
+
+      const bounds = [];
+      leads.forEach((lead, idx) => {
+        if (lead.lat && lead.lng) bounds.push([lead.lat, lead.lng]);
+        const hasAddr = !!(lead.address && lead.address.trim());
+        const addrLine = hasAddr ? esc(lead.address)
+          : `<span class="dim">Street address not in free records — <a href="${esc(lead.maps_url)}" target="_blank">verify on map</a></span>`;
+        const loc = [lead.city, lead.state, lead.postcode].filter(Boolean).join(', ');
+        const ev = (lead.evidence || []).map((e) => `<li>${esc(e)}</li>`).join('');
+        const repairs = (lead.repair_breakdown || []).map((r) =>
+          `<li><b>${esc(r.issue)}</b>${r.fix ? `<br><span class="dim">Fix: ${esc(r.fix)}</span>` : ''}</li>`).join('');
+        const hook = esc(buildHook(lead, company()));
+
+        const card = document.createElement('div');
+        card.className = 'card';
+        card.innerHTML = `
+          <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+            <span class="badge grade-${lead.grade}">Grade ${lead.grade} · ${gradeLabels[lead.grade] || ''}</span>
+            <small><b>${esc(lead.material || '')}</b>${lead.pitch ? ` · ${esc(lead.pitch)}` : ''}</small>
+          </div>
+          <p style="margin: 8px 0 4px; font-weight:700; font-size: 14px;">${addrLine}</p>
+          ${loc ? `<div class="dim">${esc(loc)}</div>` : ''}
+          ${lead.img ? `<img class="thumb" src="${lead.img}" alt="Aerial view" loading="lazy" />
+          <div class="imgcap">Aerial survey image used for this report (roof centered)</div>` : ''}
+          ${lead.damage_img ? `<img class="thumb" src="${lead.damage_img}" alt="Damage close-up" loading="lazy" />
+          <div class="imgcap">Damage close-up — problem areas marked (AI estimate, not an inspection)</div>` : ''}
+
+          ${ev ? `<div class="section-title">Visual Evidence:</div><ul>${ev}</ul>` : ''}
+          ${repairs ? `<div class="section-title">What needs done:</div><ul>${repairs}</ul>` : ''}
+
+          ${(lead.grade === 1 || lead.grade === 2) ? `
+            <div class="section-title">Pitch / Outbound Hook:</div>
+            <div class="pitch-box">"${hook}"</div>
+            <div class="card-actions">
+              <button class="btn-mail" data-i="${idx}">✉️ Draft Direct Mail</button>
+              <button class="btn-edit" data-i="${idx}">Edit pitch</button>
+              <a class="btn-link" href="${esc(lead.maps_url)}" target="_blank">Google Maps</a>
+              <a class="btn-link" href="${esc(lead.streetview_url)}" target="_blank">Street View</a>
+            </div>
+            <textarea class="pitch-editor hidden" data-i="${idx}">${hook}</textarea>
+          ` : `
+            <div class="card-actions">
+              <a class="btn-link" href="${esc(lead.maps_url)}" target="_blank">Google Maps</a>
+              <a class="btn-link" href="${esc(lead.streetview_url)}" target="_blank">Street View</a>
+            </div>
+          `}
+        `;
+        sidebar.appendChild(card);
+
+        if (lead.lat && lead.lng) {
+          const marker = L.circleMarker([lead.lat, lead.lng], {
+            radius: 8, fillColor: gradeColors[lead.grade] || '#64748b',
+            color: "#fff", weight: 1.5, fillOpacity: 0.95
+          }).addTo(map);
+          marker.bindPopup(`<b>${esc(lead.address || 'Roof')}</b><br>Grade: ${lead.grade} (${gradeLabels[lead.grade] || ''})`);
+          markers.push(marker);
+        }
+      });
+
+      sidebar.querySelectorAll('.btn-mail').forEach((b) =>
+        b.addEventListener('click', () => openMailDraft(parseInt(b.dataset.i, 10))));
+      sidebar.querySelectorAll('.btn-edit').forEach((b) =>
+        b.addEventListener('click', () => {
+          const ta = sidebar.querySelector(`.pitch-editor[data-i="${b.dataset.i}"]`);
+          ta.classList.toggle('hidden');
+          b.textContent = ta.classList.contains('hidden') ? 'Edit pitch' : 'Hide editor';
+        }));
+
+      if (bounds.length) map.fitBounds(bounds, { maxZoom: 18 });
+    }
+
+    function editedHook(i) {
+      const ta = document.querySelector(`.pitch-editor[data-i="${i}"]`);
+      return ta && !ta.classList.contains('hidden') && ta.value.trim() ? ta.value.trim() : null;
+    }
+
+    /* ---------- print mailer ---------- */
+    function openMailDraft(idx) {
+      const lead = currentLeads[idx];
+      if (!lead) return;
+      const co = company();
+      const hook = editedHook(idx) || buildHook(lead, co);
+      const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+      const ev = (lead.evidence || []).map((e) => `<li>${esc(e)}</li>`).join('');
+      const repairs = (lead.repair_breakdown || []).map((r) =>
+        `<li><b>${esc(r.issue)}</b>${r.fix ? ` — ${esc(r.fix)}` : ''}</li>`).join('');
+      const addr = [lead.address, lead.city, lead.state, lead.postcode].filter(Boolean).join(', ');
+
+      $('printSection').innerHTML = `
+        <div style="max-width: 650px; margin: 0 auto; font-family: Georgia, serif; line-height: 1.6; color: #111;">
+          <div style="border-bottom: 2px solid #2563eb; padding-bottom: 12px; margin-bottom: 20px; display:flex; justify-content:space-between;">
+            <div>
+              <h2 style="margin:0; color:#1e293b; font-family: sans-serif;">${esc(co.name || 'ROOF SCOUT')}</h2>
+              <p style="margin:0; font-size: 12px; color: #64748b; font-family: sans-serif;">Residential Roof Condition Advisory</p>
+            </div>
+            <div style="text-align: right; font-size: 13px; color: #64748b; font-family: sans-serif;">Date: ${today}</div>
+          </div>
+
+          <p><strong>Property Owner / Resident</strong><br>${esc(addr || 'Address on file')}</p>
+          <p><strong>Subject: Courtesy Aerial Roof Condition Assessment</strong></p>
+          <p>Dear Homeowner,</p>
+          <p>During a review of recent aerial imagery of rooftops in your area, we noticed signs that the roof at the property above may need attention. This is a preliminary assessment from satellite imagery — not a physical inspection — and we're sharing it as a courtesy.</p>
+
+          <div style="text-align:center; margin: 20px 0;">
+            ${lead.img ? `<img src="${lead.img}" style="width: 300px; height: 200px; object-fit: cover; border: 1px solid #ccc; border-radius: 4px;" />` : ''}
+            ${lead.damage_img ? `<img src="${lead.damage_img}" style="width: 300px; height: 200px; object-fit: cover; border: 1px solid #ccc; border-radius: 4px; margin-left: 8px;" />` : ''}
+            <div style="font-size: 11px; color: #666; margin-top: 4px; font-family: sans-serif;">Aerial survey images used for this assessment (roof centered; damage areas marked)</div>
+          </div>
+
+          ${ev ? `<p><strong>What we observed:</strong></p><ul>${ev}</ul>` : ''}
+          ${repairs ? `<p><strong>What typically needs done:</strong></p><ul>${repairs}</ul>` : ''}
+
+          <p><strong>Next steps:</strong><br>${esc(hook)}</p>
+
+          <p>Because small roof problems become expensive interior damage fast, we offer a free on-site inspection to verify these findings in person before the next storm does it for you.</p>
+
+          <div style="margin-top: 40px; border-top: 1px solid #e2e8f0; padding-top: 15px; font-family: sans-serif; font-size: 13px;">
+            <p style="margin:0;"><strong>${esc(co.rep || co.name || 'Roof Scout')}</strong>${co.name && co.rep ? ` · ${esc(co.name)}` : ''}</p>
+            ${co.phone ? `<p style="margin:0;"><strong>Phone:</strong> ${esc(co.phone)}</p>` : ''}
+          </div>
+        </div>`;
+      $('printSection').style.display = 'block';
+      $('printOverlay').classList.remove('hidden');
+    }
+    function closeMail() {
+      $('printOverlay').classList.add('hidden');
+      $('printSection').style.display = 'none';
+    }
+
+    /* ---------- CSV ---------- */
+    function exportCSV() {
+      if (!currentLeads.length) { alert('Run a scan first.'); return; }
+      const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+      const rows = [['address', 'city', 'state', 'postcode', 'county', 'lat', 'lng', 'grade',
+        'confidence', 'material', 'pitch', 'evidence', 'what_needs_done', 'maps_url']];
+      currentLeads.forEach((l) => rows.push([
+        l.address, l.city, l.state, l.postcode, l.county, l.lat, l.lng, l.grade,
+        l.confidence, l.material, l.pitch, (l.evidence || []).join(' | '),
+        (l.repair_breakdown || []).map((r) => `${r.issue} -> ${r.fix || ''}`).join(' | '),
+        l.maps_url]));
+      const blob = new Blob([rows.map((r) => r.map(q).join(',')).join('\n')], { type: 'text/csv' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'roof-scout-leads.csv';
+      a.click();
+    }
+
+    toggleMode();
+  </script>
 </body>
 </html>
