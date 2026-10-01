@@ -2,7 +2,8 @@
 
 Sources (all free, no keys):
 - Nominatim (OpenStreetMap) for zip centroid + reverse-geocoded addresses.
-- Esri World Imagery tiles for high-res aerial views.
+- Esri World Imagery tiles for high-res aerial views (primary).
+- USGS NAIP aerial photos via the National Map (free fallback where Esri has no coverage).
 - Gemini (gemini-3.1-flash-lite) vision for the 0-5 roof Tru-scale grade.
 """
 from __future__ import annotations
@@ -115,6 +116,7 @@ def sample_addresses(zipcode: str, center, count: int, progress=None):
 # ---------------- aerial tiles ----------------
 
 _ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+_USGS_EXPORT = "https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/export"
 
 
 def _tile_xy(lat: float, lng: float, z: int):
@@ -141,12 +143,40 @@ def _is_placeholder(tile: Image.Image) -> bool:
     return ImageStat.Stat(tile.convert("L")).stddev[0] < 15.0
 
 
-def roof_image(lat: float, lng: float, z: int = 20) -> tuple[bytes | None, int]:
+def _usgs_image(lat: float, lng: float, half_m: float = 60.0) -> bytes | None:
+    """USGS NAIP aerial photo via the National Map export endpoint (free, no key).
+    Single 512x512 JPEG for a ~120m box around the point."""
+    dlat = half_m / 111000.0
+    dlng = half_m / (111000.0 * max(0.2, math.cos(math.radians(lat))))
+    params = {
+        "bbox": f"{lng - dlng},{lat - dlat},{lng + dlng},{lat + dlat}",
+        "bboxSR": "4326", "imageSR": "4326",
+        "size": "512,512", "format": "jpg", "f": "image",
+    }
+    url = _USGS_EXPORT + "?" + urllib.parse.urlencode(params)
+    try:
+        req = urllib.request.Request(url, headers=_UA)
+        with urllib.request.urlopen(req, timeout=40) as resp:
+            data = resp.read()
+        if not data.startswith(b"\xff\xd8\xff"):
+            return None  # error JSON, not an image
+        img = Image.open(io.BytesIO(data)).convert("RGB")
+        if _is_placeholder(img):
+            return None
+        buf = io.BytesIO()
+        img.save(buf, "JPEG", quality=82)
+        return buf.getvalue()
+    except Exception:
+        return None
+
+
+def roof_image(lat: float, lng: float, z: int = 20) -> tuple[bytes | None, int, str]:
     """2x2 tile stitch (~60m across at z20) centered near the point.
 
     Where Esri has no coverage at the requested zoom it serves placeholder
-    tiles; step down to z-1 then z-2 before giving up. Never grade a
-    placeholder as if it were a roof. Returns (JPEG bytes or None, zoom used).
+    tiles; step down to z-1 then z-2, then fall back to free USGS NAIP aerial
+    photos before giving up. Never grade a placeholder as if it were a roof.
+    Returns (JPEG bytes or None, zoom used, imagery source).
     """
     for zz in (z, z - 1, z - 2):
         x, y = _tile_xy(lat, lng, zz)
@@ -164,8 +194,11 @@ def roof_image(lat: float, lng: float, z: int = 20) -> tuple[bytes | None, int]:
         canvas.paste(tiles[3], (256, 256))
         buf = io.BytesIO()
         canvas.save(buf, "JPEG", quality=82)
-        return buf.getvalue(), zz
-    return None, z
+        return buf.getvalue(), zz, "esri"
+    usgs = _usgs_image(lat, lng)
+    if usgs:
+        return usgs, 18, "usgs"
+    return None, z, "none"
 
 
 # ---------------- vision grading ----------------

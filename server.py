@@ -84,11 +84,12 @@ def _run_scan(job_id: str, zipcode: str, count: int, grader=None):
         _set_job(job_id, phase="imagery", done=0, total=len(houses),
                  msg="Pulling aerial views…")
         def grab(h):
-            img, zoom = pipeline.roof_image(h["lat"], h["lng"])
+            img, zoom, src = pipeline.roof_image(h["lat"], h["lng"])
             if img:
                 import base64
                 h["image_b64"] = base64.b64encode(img).decode()
                 h["zoom"] = zoom
+                h["imagery"] = src
             return h
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=4) as ex:
