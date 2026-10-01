@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RoofScout — Find roofs that need work</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="hero">
+  <h1>🏠 RoofScout</h1>
+  <p class="tag">Type in a zip code. We scan the rooftops from above and grade every roof 0–5 — worst first.</p>
+  <form id="scanForm" class="scanbar">
+    <input id="zipInput" inputmode="numeric" maxlength="5" placeholder="Zip code" autocomplete="postal-code">
+    <select id="countSel">
+      <option value="10">10 roofs</option>
+      <option value="20" selected>20 roofs</option>
+      <option value="30">30 roofs</option>
+    </select>
+    <button type="submit" id="scanBtn">Scan roofs</button>
+  </form>
+  <p id="formErr" class="err hidden"></p>
+</header>
+
+<section id="progress" class="hidden">
+  <div class="pbar"><div id="pfill"></div></div>
+  <p id="pmsg">Starting…</p>
+</section>
+
+<section id="results" class="hidden">
+  <div class="res-head">
+    <h2 id="resTitle"></h2>
+    <p id="resSub" class="dim"></p>
+  </div>
+  <div class="legend">
+    <span class="g g1">1 Failing</span><span class="g g2">2 Worn</span><span class="g g3">3 Aging</span><span class="g g4">4 Healthy</span><span class="g g5">5 Solid</span><span class="g g0">0 Can't tell</span>
+  </div>
+  <div id="cards"></div>
+</section>
+
+<footer>
+  <p>Roof grades are AI estimates from aerial imagery — verify on site before quoting work.</p>
+  <p class="dim">Imagery © Esri World Imagery · Addresses © OpenStreetMap contributors</p>
+</footer>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
