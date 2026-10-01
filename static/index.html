@@ -259,7 +259,7 @@
           sidebar.innerHTML = `<div class="card" style="border:2px solid #f59e0b;">
             <h3 style="margin-top:0;">🧪 Trial scan used up</h3>
             <p style="font-size:14px; color:#334155;">Your free trial includes <b>1 ZIP scan</b> and <b>5 lead unlocks</b>.
-            Upgrade to keep hunting roofs — <b>Starter $49/mo</b> (2 scans/mo) or <b>Pro $99/mo</b> (8 scans/mo),
+            Upgrade to keep hunting roofs — <a href="https://buy.stripe.com/7sY14gfPl24D3Lh23vdjO0g" target="_blank" rel="noopener" style="color:#4da3ff;"><b>Starter $49.99/mo</b></a> (2 scans/mo) or <a href="https://buy.stripe.com/aFa00c5aH38Hgy37nPdjO0h" target="_blank" rel="noopener" style="color:#4da3ff;"><b>Pro $99.99/mo</b></a> (8 scans/mo),
             every address included, nothing shared with competitors.</p>
             <p style="font-size:13px; color:#64748b;">Angi charges $40–$110 for a single lead shared with 3–8 other roofers.
             Roof Scout leads are exclusive to you.</p></div>`;
@@ -529,7 +529,8 @@
         const s = q.scans_left, u = q.unlocks_left;
         b.classList.remove('hidden');
         b.innerHTML = `<span>🧪 <b>Free trial</b> — ${s} ZIP scan${s === 1 ? '' : 's'} left · ${u} lead unlock${u === 1 ? '' : 's'} left</span>
-          <button onclick="alert('Plans: Starter $49/mo (2 scans/mo), Pro $99/mo (8 scans/mo). Every address included. Contact us to upgrade.')">Upgrade</button>`;
+          <span><a href="https://buy.stripe.com/7sY14gfPl24D3Lh23vdjO0g" target="_blank" rel="noopener" style="display:inline-block;margin-left:8px;padding:6px 12px;background:#2563eb;color:#fff;border-radius:8px;text-decoration:none;font-size:13px;">Starter — $49.99/mo</a>
+          <a href="https://buy.stripe.com/aFa00c5aH38Hgy37nPdjO0h" target="_blank" rel="noopener" style="display:inline-block;margin-left:8px;padding:6px 12px;background:#059669;color:#fff;border-radius:8px;text-decoration:none;font-size:13px;">Pro — $99.99/mo</a></span>`;
       } else {
         const s = q.scans_left < 0 ? '∞' : q.scans_left;
         b.classList.remove('hidden');
@@ -550,7 +551,8 @@
         const d = await r.json();
         if (d.error === 'trial_unlocks_exhausted' || r.status === 402) {
           if (d.quota) setQuota(d.quota);
-          alert('You have used all 5 free unlocks. Upgrade to Starter ($49/mo) or Pro ($99/mo) for every address.');
+          const goPro = confirm('You have used all 5 free unlocks.\n\n• Starter $49.99/mo — 2 scans/mo\n• Pro $99.99/mo — 8 scans/mo\n\nPress OK to open the Pro checkout, or Cancel for Starter.');
+          window.open(goPro ? 'https://buy.stripe.com/aFa00c5aH38Hgy37nPdjO0h' : 'https://buy.stripe.com/7sY14gfPl24D3Lh23vdjO0g', '_blank', 'noopener');
           renderResults(currentLeads, lastArea);
           return;
         }
