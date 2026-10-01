@@ -851,29 +851,17 @@ class TestRotation:
         far = max(abs(h["lat"] - 39.1) for h in out)
         assert far <= 0.1 + 1e-9
 
-    def test_vacant_buildings_dont_take_pool_slots(self, monkeypatch):
-        near_vacant = [{"lat": 39.0 + i * 0.0001, "lng": -80.0, "address": "",
-                        "building": "house", "vacant": True} for i in range(200)]
-        farther = [{"lat": 39.1 + i * 0.001, "lng": -80.0, "address": "",
-                    "building": "house"} for i in range(50)]
+    def test_vacant_buildings_stay_in_pool_flagged(self, monkeypatch):
+        houses = [{"lat": 39.0 + i * 0.001, "lng": -80.0, "address": "",
+                   "building": "house", "vacant": i % 2 == 0}
+                  for i in range(10)]
         monkeypatch.setattr(pipeline, "_overpass_buildings",
-                            lambda *a, **k: near_vacant + farther)
+                            lambda *a, **k: houses)
         monkeypatch.setattr(pipeline, "_area_context", lambda *a: {})
         monkeypatch.setattr(pipeline, "_grid_points", lambda *a, **k: [])
         out = pipeline.candidate_roofs("12345", (39.0, -80.0, "X", "City"), 20)
-        assert len(out) == 50 and not any(h["vacant"] for h in out)
-
-    def test_grid_skips_vacant_footprint_cells(self, monkeypatch):
-        vacant = [{"lat": 39.0, "lng": -80.0, "address": "",
-                   "building": "house", "vacant": True}]
-        monkeypatch.setattr(pipeline, "_overpass_buildings",
-                            lambda *a, **k: vacant)
-        monkeypatch.setattr(pipeline, "_area_context", lambda *a: {})
-        monkeypatch.setattr(pipeline, "_grid_points",
-                            lambda *a, **k: [{"address": "", "lat": 39.0,
-                                              "lng": -80.0}])
-        out = pipeline.candidate_roofs("12345", (39.0, -80.0, "X", "City"), 20)
-        assert out == []
+        assert len(out) == 10
+        assert sum(1 for h in out if h["vacant"]) == 5
 
     def test_thin_footprints_topped_up_to_200(self, monkeypatch):
         monkeypatch.setattr(pipeline, "_overpass_buildings",
@@ -1062,6 +1050,25 @@ class TestPrescreen:
         out = pipeline.prescreen_damage("k", cands, 5,
                                         prescreener=lambda b: [4] * len(b))
         assert len(out) == 3  # all damaged -> all deep-scanned
+
+    def test_miscounted_batch_rescored_one_by_one(self, monkeypatch):
+        monkeypatch.setattr(pipeline, "roof_image",
+                            lambda *a, **k: (b"img", 19, "esri"))
+        cands = [{"address": f"{i} St", "lat": 39.0 + i * 0.001,
+                  "lng": -80.0} for i in range(4)]
+        truth = {0: 1, 1: 4, 2: 2, 3: 5}
+        calls = []
+
+        def pre(b64s):
+            calls.append(len(b64s))
+            if len(b64s) > 1:
+                return [4, 2, 5]  # one score missing
+            return [truth[len(calls) - 3]]
+
+        out = pipeline.prescreen_damage("k", cands, 4, prescreener=pre)
+        assert calls == [4, 4, 1, 1, 1, 1]
+        assert [c["micro_score"] for c in cands] == [1, 4, 2, 5]
+        assert [c["address"] for c in out] == ["3 St", "1 St"]
 
     def test_vacant_buildings_keep_flag_through_triage(self, monkeypatch):
         # Vacant-flagged buildings are NOT dropped: they get triaged like
