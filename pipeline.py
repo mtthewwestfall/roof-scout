@@ -815,10 +815,36 @@ def grade_roofs(api_key: str, houses: list[dict], progress=None,
                       "evidence": ["grading unavailable"],
                       "material": "", "pitch": "", "obstruction": "",
                       "damage_boxes": []})
+        v = obscured_verdict(h)
+        if v:
+            h.update(v)
     return houses
 
 
 _GRADE_ORDER = {1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 0: 5}
+
+
+_TREE_WORDS = ("tree", "canopy", "foliage", "woods", "vegetation")
+
+
+def obscured_verdict(house: dict) -> dict | None:
+    """Plain-language verdict when a roof can't be assessed at all.
+
+    Grade 0 + low confidence with tree/canopy obstruction means the
+    imagery is useless — say so plainly instead of handing back a bare 0.
+    """
+    if house.get("grade") != 0 or house.get("confidence") != "low":
+        return None
+    text = " ".join(
+        [str(house.get("obstruction") or "")] +
+        [str(e) for e in (house.get("evidence") or [])]
+    ).lower()
+    if any(w in text for w in _TREE_WORDS):
+        return {"verdict": "tree-obscured",
+                "verdict_note": ("Tree cover hides this roof — it can't be graded "
+                                 "from the current aerial imagery. Try leaf-off "
+                                 "(winter) imagery or an on-site look.")}
+    return None
 
 
 def sort_leads(houses: list[dict]) -> list[dict]:

@@ -307,6 +307,23 @@ def _valid_email(email: str) -> bool:
     return bool(re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email or ""))
 
 
+_COMPANY_SUFFIXES = {
+    "llc", "inc", "incorporated", "corp", "corporation", "co", "company",
+    "ltd", "limited", "llp", "pllc", "pa", "lp", "pllp",
+}
+
+
+def _normalize_company(name: str) -> str:
+    """Lowercase, strip punctuation/extra spaces, drop trailing legal
+    suffixes (LLC, Inc, Co, ...). Used to catch the same company signing
+    up for a second trial under a different email. Conservative: only
+    exact normalized matches are treated as the same company."""
+    words = re.sub(r"[^a-z0-9]+", " ", (name or "").lower()).split()
+    while words and words[-1] in _COMPANY_SUFFIXES:
+        words.pop()
+    return " ".join(words)
+
+
 @app.post("/api/auth/signup")
 def signup():
     body = request.get_json(force=True, silent=True) or {}
@@ -332,6 +349,18 @@ def signup():
                         (email,)).fetchone():
             return jsonify({"ok": False,
                             "error": "That email already has an account. Try logging in."}), 400
+        if account_type == "company":
+            # One trial per company: block a second signup whose company
+            # name normalizes to one already on file, even with a new email.
+            norm = _normalize_company(company_name)
+            if norm:
+                existing = conn.execute(
+                    "SELECT company_name FROM users"
+                    " WHERE account_type='company'").fetchall()
+                if any(_normalize_company(e[0]) == norm for e in existing):
+                    return jsonify({"ok": False, "error":
+                        "This company already has an account. Try logging in,"
+                        " or contact support to add another seat."}), 400
         is_admin = 1 if email == OWNER_EMAIL else 0
         conn.execute(
             "INSERT INTO users (id, email, pw_hash, salt, account_type,"
@@ -558,6 +587,12 @@ def start_scan():
 
     if re.fullmatch(r"\d{5}", raw):
         zipcode = raw
+        # Quota first: a cached hit still costs one scan. Check allowance
+        # and consume BEFORE serving the cached payload.
+        blocked = quota_ok()
+        if blocked:
+            return blocked
+        quota = use_scan()
         cached = _cache_get(zipcode, count)
         if cached:
             conn = _db()
@@ -565,20 +600,16 @@ def start_scan():
                 leads = _shape_leads(conn, cached.get("leads") or [], user)
             finally:
                 conn.close()
-            return jsonify({"ok": True, "cached": True,
+            return jsonify({"ok": True, "cached": True, "quota": quota,
                             "payload": {"zip": cached.get("zip"),
                                         "area": cached.get("area"),
                                         "leads": leads,
                                         "scanned_at": cached.get("scanned_at")}})
-        blocked = quota_ok()
-        if blocked:
-            return blocked
         job_id = uuid.uuid4().hex[:12]
         with _jobs_lock:
             _jobs[job_id] = {"status": "running", "phase": "start", "done": 0,
                              "total": count, "msg": "Starting…", "zip": zipcode,
                              "single": False, "owner": user["id"]}
-        quota = use_scan()
         t = threading.Thread(target=_run_scan, args=(job_id, zipcode, count),
                              daemon=True)
         t.start()
@@ -628,6 +659,9 @@ def scan_status(job_id: str):
         job = _jobs.get(job_id)
     if not job:
         return jsonify({"ok": False, "error": "unknown job"}), 404
+    # Account-scoped: only the job's owner (or an admin) may read it.
+    if not user.get("is_admin") and job.get("owner") != user["id"]:
+        return jsonify({"ok": False, "error": "forbidden"}), 403
     out = {"ok": True, "status": job["status"],
            "phase": job.get("phase"), "done": job.get("done", 0),
            "total": job.get("total", 0), "msg": job.get("msg", "")}
@@ -767,9 +801,9 @@ def admin_users():
 
 @app.get("/admin")
 def admin_page():
-    """Owner-only: account management page."""
-    if not _admin_ok():
-        return send_from_directory("static", "admin.html")
+    """Admin account-management page. The page itself shows a login form
+    and gates its API calls; safe to serve to everyone."""
+    return send_from_directory("static", "admin.html")
 
 
 @app.post("/api/admin/set-plan")
