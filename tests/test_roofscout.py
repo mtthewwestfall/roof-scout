@@ -846,6 +846,18 @@ class TestRotation:
         out = pipeline.candidate_roofs("12345", (39.0, -80.0, "X", "City"), 20)
         assert len(out) == 50 and not any(h["vacant"] for h in out)
 
+    def test_grid_skips_vacant_footprint_cells(self, monkeypatch):
+        vacant = [{"lat": 39.0, "lng": -80.0, "address": "",
+                   "building": "house", "vacant": True}]
+        monkeypatch.setattr(pipeline, "_overpass_buildings",
+                            lambda *a, **k: vacant)
+        monkeypatch.setattr(pipeline, "_area_context", lambda *a: {})
+        monkeypatch.setattr(pipeline, "_grid_points",
+                            lambda *a, **k: [{"address": "", "lat": 39.0,
+                                              "lng": -80.0}])
+        out = pipeline.candidate_roofs("12345", (39.0, -80.0, "X", "City"), 20)
+        assert out == []
+
     def test_thin_footprints_topped_up_to_200(self, monkeypatch):
         monkeypatch.setattr(pipeline, "_overpass_buildings",
                             lambda *a, **k: [])

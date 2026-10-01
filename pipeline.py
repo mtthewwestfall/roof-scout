@@ -337,6 +337,8 @@ def candidate_roofs(zipcode: str, center, count: int, progress=None,
     pool = _footprint_pool(zipcode, center, MICRO_SCAN_POOL * 2)
     if pool:
         ctx = _area_context(lat0, lng0)
+    vacant_cells = {_cell_of(b["lat"], b["lng"]) for b in pool
+                    if b.get("vacant")}
     pool = [b for b in pool
             if not b.get("vacant")
             and _cell_of(b["lat"], b["lng"]) not in exclude_cells]
@@ -344,7 +346,8 @@ def candidate_roofs(zipcode: str, center, count: int, progress=None,
     houses = _shape_houses(pool[:MICRO_SCAN_POOL], ctx, city, zipcode)
     want = max(count, MICRO_SCAN_POOL)
     if len(houses) < want:
-        have = {_cell_of(h["lat"], h["lng"]) for h in houses} | exclude_cells
+        have = ({_cell_of(h["lat"], h["lng"]) for h in houses}
+                | exclude_cells | vacant_cells)
         grid = _grid_points(zipcode, center,
                             want - len(houses) + len(exclude_cells),
                             progress=progress,
