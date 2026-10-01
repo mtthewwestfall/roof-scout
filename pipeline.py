@@ -122,6 +122,35 @@ def _area_context(lat: float, lng: float) -> dict:
     }
 
 
+def geocode_address(query: str):
+    """Geocode a typed street address -> single address dict, or None.
+
+    Requires a house number + street so the aerial view centers on a real
+    rooftop, not a city centroid."""
+    d = _nominatim("/search", {"q": query, "countrycodes": "us",
+                               "format": "json", "addressdetails": 1,
+                               "limit": 1})
+    if not d:
+        return None
+    r = d[0]
+    a = r.get("address", {})
+    house, road = a.get("house_number"), a.get("road")
+    if not house or not road:
+        return None
+    city = (a.get("city") or a.get("town") or a.get("village")
+            or a.get("hamlet") or "")
+    return {
+        "address": f"{house} {road}",
+        "city": city,
+        "state": a.get("state", ""),
+        "postcode": (a.get("postcode") or "")[:5],
+        "county": (a.get("county") or "").replace(" County", ""),
+        "area": a.get("suburb") or a.get("neighbourhood") or a.get("quarter") or "",
+        "lat": float(r["lat"]),
+        "lng": float(r["lon"]),
+    }
+
+
 def sample_addresses(zipcode: str, center, count: int, progress=None):
     """Overpass building footprints first (real rooftops with address tags),
     topped up by the jittered-grid reverse-geocode fallback."""

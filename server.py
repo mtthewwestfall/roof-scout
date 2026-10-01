@@ -60,29 +60,16 @@ def _set_job(job_id: str, **kw):
         _jobs[job_id].update(kw)
 
 
-def _run_scan(job_id: str, zipcode: str, count: int, grader=None):
+def _run_houses(job_id: str, houses: list[dict], area: str,
+               cache: tuple | None = None, grader=None):
+    """Imagery + grading + sort tail, shared by zip and single-address scans."""
     try:
         def progress(phase, done, total, msg):
             _set_job(job_id, phase=phase, done=done, total=total, msg=msg)
 
-        _set_job(job_id, phase="ziplookup", msg="Locating zip code…")
-        center = pipeline.zip_center(zipcode)
-        if not center:
-            _set_job(job_id, status="error",
-                     error="Couldn't find that zip code. Try a valid 5-digit US zip.")
-            return
-        _set_job(job_id, area=center[2])
-
-        houses = pipeline.sample_addresses(zipcode, center, count, progress)
-        if not houses:
-            _set_job(job_id, status="error",
-                     error="No addresses found near that zip. Try another.")
-            return
-        for h in houses:
-            h["key"] = h["address"] + "|" + h["postcode"]
-
         _set_job(job_id, phase="imagery", done=0, total=len(houses),
                  msg="Pulling aerial views…")
+
         def grab(h):
             img, zoom, src = pipeline.roof_image(h["lat"], h["lng"])
             if img:
@@ -114,11 +101,50 @@ def _run_scan(job_id: str, zipcode: str, count: int, grader=None):
             h["streetview_url"] = ("https://www.google.com/maps/@?api=1&map_action=pano"
                                    f"&viewpoint={h['lat']},{h['lng']}")
         leads = pipeline.sort_leads(houses)
-        payload = {"zip": zipcode, "area": center[2], "leads": leads,
-                   "scanned_at": time.time()}
-        _cache_put(zipcode, count, payload)
-        _set_job(job_id, status="done", leads=leads, area=center[2],
+        payload = {"zip": cache[0] if cache else "", "area": area,
+                   "leads": leads, "scanned_at": time.time()}
+        if cache:
+            _cache_put(cache[0], cache[1], payload)
+        _set_job(job_id, status="done", leads=leads, area=area,
                  msg=f"Done — {len(leads)} roofs graded.")
+    except Exception as e:
+        _set_job(job_id, status="error", error=f"Scan failed: {e}")
+
+
+def _run_scan(job_id: str, zipcode: str, count: int, grader=None):
+    try:
+        def progress(phase, done, total, msg):
+            _set_job(job_id, phase=phase, done=done, total=total, msg=msg)
+
+        _set_job(job_id, phase="ziplookup", msg="Locating zip code…")
+        center = pipeline.zip_center(zipcode)
+        if not center:
+            _set_job(job_id, status="error",
+                     error="Couldn't find that zip code. Try a valid 5-digit US zip.")
+            return
+        _set_job(job_id, area=center[2])
+
+        houses = pipeline.sample_addresses(zipcode, center, count, progress)
+        if not houses:
+            _set_job(job_id, status="error",
+                     error="No addresses found near that zip. Try another.")
+            return
+        for h in houses:
+            h["key"] = h["address"] + "|" + h["postcode"]
+        _run_houses(job_id, houses, center[2], cache=(zipcode, count),
+                    grader=grader)
+    except Exception as e:
+        _set_job(job_id, status="error", error=f"Scan failed: {e}")
+
+
+def _run_address_scan(job_id: str, house: dict, grader=None):
+    try:
+        house["key"] = house["address"] + "|" + house["postcode"]
+        area = ", ".join(x for x in (house.get("city"),
+                                     house.get("state")) if x) or house["address"]
+        _set_job(job_id, phase="ziplookup",
+                 msg=f"Located {house['address']}…", area=area)
+        _run_houses(job_id, [house], area, cache=None, grader=grader)
     except Exception as e:
         _set_job(job_id, status="error", error=f"Scan failed: {e}")
 
@@ -126,21 +152,41 @@ def _run_scan(job_id: str, zipcode: str, count: int, grader=None):
 @app.post("/api/scan")
 def start_scan():
     body = request.get_json(force=True, silent=True) or {}
-    zipcode = re.sub(r"\D", "", str(body.get("zip", "")))[:5]
+    raw = str(body.get("q", body.get("zip", ""))).strip()
     try:
         count = max(5, min(30, int(body.get("count", 20))))
     except Exception:
         count = 20
-    if not re.fullmatch(r"\d{5}", zipcode):
-        return jsonify({"ok": False, "error": "Enter a valid 5-digit US zip."}), 400
-    cached = _cache_get(zipcode, count)
-    if cached:
-        return jsonify({"ok": True, "cached": True, "payload": cached})
+
+    if re.fullmatch(r"\d{5}", raw):
+        zipcode = raw
+        cached = _cache_get(zipcode, count)
+        if cached:
+            return jsonify({"ok": True, "cached": True, "payload": cached})
+        job_id = uuid.uuid4().hex[:12]
+        with _jobs_lock:
+            _jobs[job_id] = {"status": "running", "phase": "start", "done": 0,
+                             "total": count, "msg": "Starting…", "zip": zipcode}
+        t = threading.Thread(target=_run_scan, args=(job_id, zipcode, count),
+                             daemon=True)
+        t.start()
+        return jsonify({"ok": True, "job_id": job_id})
+
+    # ...otherwise treat it as a typed street address (interchangeable input)
+    if len(raw) < 5:
+        return jsonify({"ok": False,
+                        "error": "Enter a 5-digit zip or a street address."}), 400
+    house = pipeline.geocode_address(raw)
+    if not house:
+        return jsonify({"ok": False, "error":
+                        f"Couldn't locate “{raw}”. Try a full street address "
+                        "with city and state."}), 400
     job_id = uuid.uuid4().hex[:12]
     with _jobs_lock:
         _jobs[job_id] = {"status": "running", "phase": "start", "done": 0,
-                         "total": count, "msg": "Starting…", "zip": zipcode}
-    t = threading.Thread(target=_run_scan, args=(job_id, zipcode, count),
+                         "total": 1, "msg": "Starting…",
+                         "zip": house.get("postcode", "")}
+    t = threading.Thread(target=_run_address_scan, args=(job_id, house),
                          daemon=True)
     t.start()
     return jsonify({"ok": True, "job_id": job_id})

@@ -110,8 +110,8 @@ ${co.name} · ${co.phone}`);
 
   async function startScan(ev) {
     ev.preventDefault();
-    const zip = $('zipInput').value.replace(/\D/g, '').slice(0, 5);
-    if (!/^\d{5}$/.test(zip)) { showErr('Enter a valid 5-digit US zip.'); return; }
+    const q = $('zipInput').value.trim();
+    if (q.length < 3) { showErr('Enter a zip code or a street address.'); return; }
     $('formErr').classList.add('hidden');
     $('results').classList.add('hidden');
     $('progress').classList.remove('hidden');
@@ -120,7 +120,7 @@ ${co.name} · ${co.phone}`);
     try {
       const r = await fetch('/api/scan', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({zip, count: parseInt($('countSel').value, 10)}),
+        body: JSON.stringify({q, count: parseInt($('countSel').value, 10)}),
       });
       const d = await r.json();
       if (!d.ok) { showErr(d.error || 'Scan failed.'); resetBtn(); return; }
