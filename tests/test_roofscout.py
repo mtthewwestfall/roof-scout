@@ -880,6 +880,30 @@ class TestPrescreen:
                                         prescreener=lambda b64s: [5] * len(b64s))
         assert len(out) == 4
 
+    def test_progress_arity_matches_server(self, monkeypatch):
+        # The server's progress callback takes (phase, done, total, msg);
+        # every progress call in the new pipeline code must match it.
+        calls = []
+
+        def progress(phase, done, total, msg):
+            calls.append((phase, done, total, msg))
+
+        pool = [{"lat": 39.0 + i * 0.001, "lng": -80.0, "address": "",
+                 "building": "house"} for i in range(10)]
+        monkeypatch.setattr(pipeline, "_overpass_buildings",
+                            lambda *a, **k: pool)
+        monkeypatch.setattr(pipeline, "_area_context", lambda *a: {})
+        monkeypatch.setattr(pipeline, "_grid_points", lambda *a, **k: [])
+        monkeypatch.setattr(pipeline, "roof_image",
+                            lambda lat, lng, z=20: (b"img", z, "esri"))
+        center = (39.0, -80.0, "X", "City")
+        cands = pipeline.candidate_roofs("12345", center, 5,
+                                         progress=progress)
+        pipeline.prescreen_damage("k", cands, 3, progress=progress,
+                                  prescreener=lambda b: [3] * len(b))
+        assert any(p == "candidates" for p, _, _, _ in calls)
+        assert any(p == "prescreen" for p, _, _, _ in calls)
+
     def test_empty_candidates(self):
         assert pipeline.prescreen_damage("k", [], 5) == []
 

@@ -309,7 +309,7 @@ def candidate_roofs(zipcode: str, center, count: int, progress=None,
         h.setdefault("county", ctx.get("county", ""))
         h.setdefault("area", "")
     if progress:
-        progress("candidates", 1.0, f"{len(houses)} candidate roofs")
+        progress("candidates", 1, 1, f"{len(houses)} candidate roofs")
     return houses
 
 
@@ -971,7 +971,7 @@ def prescreen_damage(api_key: str, cands: list[dict], count: int,
     for c in picked:
         c.pop("image_b64", None)
     if progress:
-        progress("prescreen", 1.0,
+        progress("prescreen", 1, 1,
                  f"{len(picked)} roofs flagged for deep-dive")
     return picked
 
