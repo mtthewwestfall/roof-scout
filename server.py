@@ -110,6 +110,7 @@ DB_PATH = _default_db_path()
 CACHE_TTL = 7 * 24 * 3600
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
 OWNER_EMAIL = "mtthew.westfall@gmail.com"
+ALLOWED_TEST_EMAILS = {"mtthew.westfall@gmail.com", "mtthew.westfall@gmaiI.com", "mtthew.westfall@gmaii.com"}
 SESSION_DAYS = 30
 
 _jobs: dict[str, dict] = {}
@@ -480,7 +481,7 @@ def signup():
                     return jsonify({"ok": False, "error":
                         "This company already has an account. Try logging in,"
                         " or contact support to add another seat."}), 400
-        is_admin = 1 if email == OWNER_EMAIL else 0
+        is_admin = 1 if email in ALLOWED_TEST_EMAILS else 0
         conn.execute(
             "INSERT INTO users (id, email, pw_hash, salt, account_type,"
             " company_name, is_admin, created_at) VALUES (?,?,?,?,?,?,?,?)",
@@ -909,6 +910,101 @@ def admin_logout():
     resp = jsonify({"ok": True})
     resp.delete_cookie("rs_admin", path="/")
     return resp
+
+
+def _can_run_tests() -> bool:
+    """Only mtthew.westfall@gmail.com (and typo variant gmaiI.com) can run test suite."""
+    user = _current_user()
+    if user and user.get("email") in ALLOWED_TEST_EMAILS:
+        return True
+    return False
+
+
+_latest_test_results: dict | None = None
+
+
+@app.post("/api/admin/run-tests")
+def admin_run_tests():
+    """Run pytest suite and store/return results.
+    Restricted to authorized email (mtthew.westfall@gmail.com)."""
+    if not _admin_ok():
+        return jsonify({"ok": False, "error": "admin_required"}), 403
+    user = _current_user()
+    if not user or user.get("email") not in ALLOWED_TEST_EMAILS:
+        return jsonify({
+            "ok": False,
+            "error": "unauthorized_email",
+            "message": "Only mtthew.westfall@gmail.com is authorized to run tests."
+        }), 403
+
+    global _latest_test_results
+    import pytest
+
+    class TestCollector:
+        def __init__(self):
+            self.reports = []
+            self.start_time = time.time()
+            self.end_time = None
+
+        def pytest_runtest_logreport(self, report):
+            if report.when == "call" or (report.when == "setup" and report.failed):
+                self.reports.append({
+                    "nodeid": report.nodeid,
+                    "name": report.location[2],
+                    "file": report.location[0],
+                    "outcome": report.outcome,
+                    "duration": round(report.duration, 4),
+                    "longrepr": str(report.longrepr) if report.failed else None
+                })
+
+    collector = TestCollector()
+    test_dir = os.path.join(os.path.dirname(__file__), "tests")
+    res_code = pytest.main([test_dir, "-q"], plugins=[collector])
+    collector.end_time = time.time()
+
+    total = len(collector.reports)
+    passed = sum(1 for r in collector.reports if r["outcome"] == "passed")
+    failed = sum(1 for r in collector.reports if r["outcome"] == "failed")
+    skipped = sum(1 for r in collector.reports if r["outcome"] == "skipped")
+    total_duration = round(collector.end_time - collector.start_time, 2)
+    pass_rate = round((passed / total * 100), 1) if total > 0 else 0.0
+
+    suites: dict[str, list] = {}
+    for r in collector.reports:
+        # Nodeid format: tests/test_file.py::ClassName::test_name or tests/test_file.py::test_name
+        parts = r["nodeid"].split("::")
+        suite_name = parts[1] if len(parts) > 2 else "General"
+        if suite_name not in suites:
+            suites[suite_name] = []
+        suites[suite_name].append(r)
+
+    _latest_test_results = {
+        "ok": True,
+        "run_at": time.time(),
+        "exit_code": int(res_code),
+        "total": total,
+        "passed": passed,
+        "failed": failed,
+        "skipped": skipped,
+        "pass_rate": pass_rate,
+        "duration": total_duration,
+        "reports": collector.reports,
+        "suites": suites
+    }
+
+    return jsonify(_latest_test_results)
+
+
+@app.get("/api/admin/test-results")
+def admin_test_results():
+    """Retrieve last test run results and authorization status."""
+    if not _admin_ok():
+        return jsonify({"ok": False, "error": "admin_required"}), 403
+    return jsonify({
+        "ok": True,
+        "can_run_tests": _can_run_tests(),
+        "latest_results": _latest_test_results
+    })
 
 
 @app.get("/api/admin/users")

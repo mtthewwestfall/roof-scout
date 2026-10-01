@@ -394,6 +394,69 @@ class TestAdmin:
         assert app_client.get("/admin").status_code == 200
 
 
+class TestAdminTestRunner:
+    def test_test_runner_anon_403(self, app_client):
+        assert app_client.get("/api/admin/test-results").status_code == 403
+        assert app_client.post("/api/admin/run-tests").status_code == 403
+
+    def test_test_runner_unauthorized_email_403(self, app_client, monkeypatch):
+        signup(app_client, "other@example.com")
+        r1 = app_client.get("/api/admin/test-results")
+        assert r1.status_code == 403
+        assert r1.get_json()["error"] == "admin_required"
+
+        monkeypatch.setenv("ADMIN_PASSWORD", "pw")
+        app_client.post("/api/admin/login", json={"password": "pw"})
+        r2 = app_client.post("/api/admin/run-tests")
+        assert r2.status_code == 403
+        assert r2.get_json()["error"] == "unauthorized_email"
+
+    def test_test_runner_authorized_email_gmail(self, app_client, monkeypatch):
+        signup(app_client, "mtthew.westfall@gmail.com")
+        r_get = app_client.get("/api/admin/test-results")
+        assert r_get.status_code == 200
+        assert r_get.get_json()["can_run_tests"] is True
+
+        import pytest
+        def fake_pytest_main(args, plugins=None):
+            if plugins and len(plugins) > 0:
+                class FakeReport:
+                    when = "call"
+                    nodeid = "tests/test_roofscout.py::TestSample::test_one"
+                    location = ("tests/test_roofscout.py", 10, "test_one")
+                    outcome = "passed"
+                    duration = 0.05
+                    failed = False
+                    longrepr = None
+                plugins[0].pytest_runtest_logreport(FakeReport())
+            return 0
+
+        monkeypatch.setattr(pytest, "main", fake_pytest_main)
+
+        r_post = app_client.post("/api/admin/run-tests")
+        assert r_post.status_code == 200
+        res = r_post.get_json()
+        assert res["ok"] is True
+        assert res["total"] == 1
+
+    def test_test_runner_authorized_email_typo_allowed(self, app_client, monkeypatch):
+        signup(app_client, "mtthew.westfall@gmaiI.com")
+        r_get = app_client.get("/api/admin/test-results")
+        assert r_get.status_code == 200
+        assert r_get.get_json()["can_run_tests"] is True
+
+        import pytest
+        def fake_pytest_main(args, plugins=None):
+            return 0
+
+        monkeypatch.setattr(pytest, "main", fake_pytest_main)
+
+        r_post = app_client.post("/api/admin/run-tests")
+        assert r_post.status_code == 200
+        res = r_post.get_json()
+        assert res["ok"] is True
+
+
 # ---------------- admin password gate ----------------
 
 class TestPasswordGate:
