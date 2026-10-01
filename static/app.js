@@ -108,6 +108,15 @@ ${co.name} · ${co.phone}`);
     e.classList.remove('hidden');
   }
 
+  // Direct-scan: feed a result card's address straight into the
+  // interchangeable search input and run a dedicated single-roof scan.
+  function directScan(l) {
+    const q = [l.address, l.city, l.state, l.postcode].filter(Boolean).join(', ');
+    $('zipInput').value = q;
+    window.scrollTo({top: 0, behavior: 'smooth'});
+    startScan(new Event('submit'));
+  }
+
   async function startScan(ev) {
     ev.preventDefault();
     const q = $('zipInput').value.trim();
@@ -210,6 +219,7 @@ ${co.name} · ${co.phone}`);
         `<div class="links"><a href="${esc(l.maps_url)}" target="_blank" rel="noopener">Google Maps</a>` +
         `<a href="${esc(l.streetview_url)}" target="_blank" rel="noopener">Street View</a></div>` +
         `<button class="copybtn" data-addr="${esc(l.address + ', ' + loc)}">Copy address</button>` +
+        `<button class="copybtn directbtn">🎯 Scan this address</button>` +
         (isRepair ? `<button class="pitchbtn">Draft pitch</button>
         <div class="pitch hidden"><textarea class="pitchtext" rows="16"></textarea>
         <div class="pitchrow"><button class="copypitch">Copy pitch</button>
@@ -240,11 +250,17 @@ ${co.name} · ${co.phone}`);
         });
       }
     });
-    cards.querySelectorAll('.copybtn').forEach((b) =>
+    cards.querySelectorAll('.copybtn:not(.directbtn)').forEach((b) =>
       b.addEventListener('click', () => {
         navigator.clipboard.writeText(b.dataset.addr).catch(() => {});
         b.textContent = 'Copied ✓';
         setTimeout(() => { b.textContent = 'Copy address'; }, 1500);
+      }));
+    cards.querySelectorAll('.directbtn').forEach((b) =>
+      b.addEventListener('click', (e) => {
+        const card = e.target.closest('.card');
+        const idx = Array.from(cards.children).indexOf(card);
+        directScan(visibleLeads()[idx]);
       }));
   }
 
