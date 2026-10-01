@@ -1,4 +1,4 @@
-/* RoofScout frontend */
+/* GetVeridataNow frontend */
 (() => {
   'use strict';
   const $ = (id) => document.getElementById(id);
