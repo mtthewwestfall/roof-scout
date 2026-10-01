@@ -18,7 +18,7 @@ import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
-from PIL import Image
+from PIL import Image, ImageStat
 
 NOMINATIM = "https://nominatim.openstreetmap.org"
 _UA = {"User-Agent": "RoofScout/1.0 (residential roof condition finder)"}
@@ -134,22 +134,37 @@ def _fetch_tile(z: int, x: int, y: int) -> Image.Image | None:
         return None
 
 
-def roof_image(lat: float, lng: float, z: int = 20) -> bytes | None:
-    """2x2 tile stitch (~60m across at z20) centered near the point. JPEG bytes."""
-    x, y = _tile_xy(lat, lng, z)
-    with ThreadPoolExecutor(max_workers=4) as ex:
-        tiles = list(ex.map(_fetch_tile, [z] * 4, [x, x + 1, x, x + 1],
-                            [y, y, y + 1, y + 1]))
-    if any(t is None for t in tiles):
-        return None
-    canvas = Image.new("RGB", (512, 512))
-    canvas.paste(tiles[0], (0, 0))
-    canvas.paste(tiles[1], (256, 0))
-    canvas.paste(tiles[2], (0, 256))
-    canvas.paste(tiles[3], (256, 256))
-    buf = io.BytesIO()
-    canvas.save(buf, "JPEG", quality=82)
-    return buf.getvalue()
+def _is_placeholder(tile: Image.Image) -> bool:
+    """Esri answers HTTP 200 with a flat gray 'Map data not yet available'
+    tile where it has no imagery. Real aerial tiles have far more variance."""
+    return ImageStat.Stat(tile.convert("L")).stddev[0] < 15.0
+
+
+def roof_image(lat: float, lng: float, z: int = 20) -> tuple[bytes | None, int]:
+    """2x2 tile stitch (~60m across at z20) centered near the point.
+
+    Where Esri has no coverage at the requested zoom it serves placeholder
+    tiles; step down to z-1 then z-2 before giving up. Never grade a
+    placeholder as if it were a roof. Returns (JPEG bytes or None, zoom used).
+    """
+    for zz in (z, z - 1, z - 2):
+        x, y = _tile_xy(lat, lng, zz)
+        with ThreadPoolExecutor(max_workers=4) as ex:
+            tiles = list(ex.map(_fetch_tile, [zz] * 4, [x, x + 1, x, x + 1],
+                                [y, y, y + 1, y + 1]))
+        if any(t is None for t in tiles):
+            continue
+        if all(_is_placeholder(t) for t in tiles):
+            continue
+        canvas = Image.new("RGB", (512, 512))
+        canvas.paste(tiles[0], (0, 0))
+        canvas.paste(tiles[1], (256, 0))
+        canvas.paste(tiles[2], (0, 256))
+        canvas.paste(tiles[3], (256, 256))
+        buf = io.BytesIO()
+        canvas.save(buf, "JPEG", quality=82)
+        return buf.getvalue(), zz
+    return None, z
 
 
 # ---------------- vision grading ----------------
