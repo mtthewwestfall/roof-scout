@@ -17,7 +17,16 @@ import pipeline
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
 
-DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "roofscout.db"))
+def _default_db_path():
+    env = os.environ.get("DB_PATH", "")
+    if env:
+        return env
+    if os.path.isdir("/data"):
+        return "/data/roofscout.db"
+    return os.path.join(os.path.dirname(__file__), "roofscout.db")
+
+
+DB_PATH = _default_db_path()
 CACHE_TTL = 7 * 24 * 3600
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
 OWNER_EMAIL = "mtthew.westfall@gmail.com"
@@ -42,7 +51,172 @@ def _db():
     conn.execute("""CREATE TABLE IF NOT EXISTS sessions (
         token TEXT PRIMARY KEY, user_id TEXT NOT NULL,
         created_at REAL NOT NULL, expires_at REAL NOT NULL)""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS unlocks (
+        user_id TEXT NOT NULL, lead_key TEXT NOT NULL,
+        unlocked_at REAL NOT NULL,
+        PRIMARY KEY (user_id, lead_key))""")
+    # Trial/plan columns (added after launch; migrate old DBs in place).
+    for col in (
+            "plan TEXT NOT NULL DEFAULT 'trial'",
+            "trial_scans_used INTEGER NOT NULL DEFAULT 0",
+            "trial_unlocks_used INTEGER NOT NULL DEFAULT 0",
+            "cycle_scans_used INTEGER NOT NULL DEFAULT 0",
+            "period_start REAL NOT NULL DEFAULT 0"):
+        try:
+            conn.execute(f"ALTER TABLE users ADD COLUMN {col}")
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e).lower():
+                raise
+    conn.commit()
     return conn
+
+
+# ---------------- plans & trial quotas ----------------
+
+PLANS = {
+    "trial":   {"name": "Trial",   "scans": 1, "unlocks": 5, "cycle_days": 0},
+    "starter": {"name": "Starter", "scans": 2, "unlocks": -1, "cycle_days": 30},
+    "pro":     {"name": "Pro",     "scans": 8, "unlocks": -1, "cycle_days": 30},
+}
+TRIAL_UNLOCKS = 5
+
+
+def _quota(conn, user_id: str, is_admin: bool = False) -> dict:
+    """Current plan usage. Admins are unlimited."""
+    row = conn.execute(
+        "SELECT plan, trial_scans_used, trial_unlocks_used,"
+        " cycle_scans_used, period_start FROM users WHERE id=?",
+        (user_id,)).fetchone()
+    plan = (row[0] if row else "trial") or "trial"
+    if plan not in PLANS:
+        plan = "trial"
+    spec = PLANS[plan]
+    now = time.time()
+    if is_admin:
+        return {"plan": plan, "plan_name": "Admin",
+                "scans_left": -1, "unlocks_left": -1,
+                "scans_used": 0, "unlocks_used": 0}
+    if spec["cycle_days"]:
+        period_start = row[4] or 0
+        if now - period_start > spec["cycle_days"] * 86400:
+            conn.execute("UPDATE users SET cycle_scans_used=0, period_start=?"
+                         " WHERE id=?", (now, user_id))
+            conn.commit()
+            scans_used = 0
+        else:
+            scans_used = row[3] or 0
+        return {"plan": plan, "plan_name": spec["name"],
+                "scans_left": max(0, spec["scans"] - scans_used),
+                "unlocks_left": -1,
+                "scans_used": scans_used, "unlocks_used": 0}
+    return {"plan": plan, "plan_name": spec["name"],
+            "scans_left": max(0, spec["scans"] - (row[1] or 0)),
+            "unlocks_left": max(0, spec["unlocks"] - (row[2] or 0)),
+            "scans_used": row[1] or 0, "unlocks_used": row[2] or 0}
+
+
+def _consume_scan(conn, user_id: str, is_admin: bool):
+    row = conn.execute("SELECT plan FROM users WHERE id=?",
+                       (user_id,)).fetchone()
+    plan = (row[0] if row else "trial") or "trial"
+    if is_admin:
+        return
+    if plan in PLANS and PLANS[plan]["cycle_days"]:
+        if not conn.execute("SELECT period_start FROM users WHERE id=?",
+                            (user_id,)).fetchone()[0]:
+            conn.execute("UPDATE users SET period_start=? WHERE id=?",
+                         (time.time(), user_id))
+        conn.execute("UPDATE users SET cycle_scans_used=cycle_scans_used+1"
+                     " WHERE id=?", (user_id,))
+    else:
+        conn.execute("UPDATE users SET trial_scans_used=trial_scans_used+1"
+                     " WHERE id=?", (user_id,))
+    conn.commit()
+
+
+def _lead_key(lead: dict) -> str:
+    base = "|".join([str(lead.get("address", "")),
+                     str(lead.get("postcode", "")),
+                     f"{float(lead.get('lat') or 0):.5f}",
+                     f"{float(lead.get('lng') or 0):.5f}"])
+    return hashlib.sha1(base.encode()).hexdigest()[:16]
+
+
+def _mask_address(addr: str) -> str:
+    words = []
+    for p in (addr or "").split():
+        words.append(p[0] + chr(8226) * max(len(p) - 1, 0) if p else p)
+    return " ".join(words)
+
+
+def _jitter(lat: float, lng: float, key: str) -> tuple[float, float]:
+    h = hashlib.sha256(key.encode()).digest()
+    dlat = (int.from_bytes(h[:4], "big") / 2**32 - 0.5) * 0.006
+    dlng = (int.from_bytes(h[4:8], "big") / 2**32 - 0.5) * 0.006
+    return round(lat + dlat, 5), round(lng + dlng, 5)
+
+
+def _unlocked_keys(conn, user_id: str) -> set:
+    return {r[0] for r in
+            conn.execute("SELECT lead_key FROM unlocks WHERE user_id=?",
+                         (user_id,))}
+
+
+def _shape_leads(conn, leads: list[dict], user: dict,
+                 single: bool = False) -> list[dict]:
+    """Apply trial gating: mask addresses + jitter pins until unlocked."""
+    if user.get("is_admin") or single:
+        return [{**l, "lead_key": _lead_key(l), "locked": False}
+                for l in leads]
+    quota = _quota(conn, user["id"], False)
+    if quota["plan"] != "trial":
+        return [{**l, "lead_key": _lead_key(l), "locked": False}
+                for l in leads]
+    unlocked = _unlocked_keys(conn, user["id"])
+    out = []
+    for l in leads:
+        key = _lead_key(l)
+        if key in unlocked:
+            out.append({**l, "lead_key": key, "locked": False})
+            continue
+        c = dict(l)
+        c["lead_key"] = key
+        c["locked"] = True
+        c["address"] = _mask_address(l.get("address", ""))
+        c.pop("maps_url", None)
+        c.pop("streetview_url", None)
+        try:
+            c["lat"], c["lng"] = _jitter(float(l.get("lat") or 0),
+                                        float(l.get("lng") or 0), key)
+        except Exception:
+            pass
+        out.append(c)
+    return out
+
+
+def _find_lead(lead_key: str) -> dict | None:
+    """Locate a lead's full record in memory or the scan cache."""
+    with _jobs_lock:
+        jobs = list(_jobs.values())
+    for job in jobs:
+        for l in job.get("leads") or []:
+            if _lead_key(l) == lead_key:
+                return l
+    conn = _db()
+    try:
+        rows = conn.execute(
+            "SELECT payload FROM scans ORDER BY created_at DESC LIMIT 50"
+        ).fetchall()
+    finally:
+        conn.close()
+    for (payload,) in rows:
+        try:
+            for l in json.loads(payload).get("leads") or []:
+                if _lead_key(l) == lead_key:
+                    return l
+        except Exception:
+            continue
+    return None
 
 
 # ---------------- auth ----------------
@@ -85,8 +259,14 @@ def _current_user():
         conn.close()
     if not row:
         return None
-    return {"id": row[0], "email": row[1], "account_type": row[2],
+    user = {"id": row[0], "email": row[1], "account_type": row[2],
             "company_name": row[3], "is_admin": bool(row[4])}
+    conn2 = _db()
+    try:
+        user["quota"] = _quota(conn2, user["id"], user["is_admin"])
+    finally:
+        conn2.close()
+    return user
 
 
 def _require_user():
@@ -132,12 +312,14 @@ def signup():
             (user_id, email, _hash_pw(password, salt), salt, account_type,
              company_name, is_admin, time.time()))
         token = _new_session(conn, user_id)
+        quota = _quota(conn, user_id, bool(is_admin))
     finally:
         conn.close()
     resp = jsonify({"ok": True, "user": {"email": email,
                                         "account_type": account_type,
                                         "company_name": company_name,
-                                        "is_admin": bool(is_admin)}})
+                                        "is_admin": bool(is_admin),
+                                        "quota": quota}})
     _set_session_cookie(resp, token)
     return resp
 
@@ -158,6 +340,7 @@ def login():
         token = _new_session(conn, row[0])
         user = {"email": row[3], "account_type": row[4],
                 "company_name": row[5], "is_admin": bool(row[6])}
+        user["quota"] = _quota(conn, row[0], user["is_admin"])
     finally:
         conn.close()
     resp = jsonify({"ok": True, "user": user})
@@ -314,7 +497,7 @@ def _run_address_scan(job_id: str, house: dict, grader=None):
 
 @app.post("/api/scan")
 def start_scan():
-    _, err = _require_user()
+    user, err = _require_user()
     if err:
         return err
     body = request.get_json(force=True, silent=True) or {}
@@ -324,19 +507,55 @@ def start_scan():
     except Exception:
         count = 20
 
+    def quota_ok():
+        conn = _db()
+        try:
+            q = _quota(conn, user["id"], user["is_admin"])
+        finally:
+            conn.close()
+        if user["is_admin"]:
+            return None
+        if q["scans_left"] <= 0:
+            return (jsonify({"ok": False, "error": "trial_scans_exhausted",
+                             "quota": q}), 402)
+        return None
+
+    def use_scan():
+        conn = _db()
+        try:
+            _consume_scan(conn, user["id"], user["is_admin"])
+            q = _quota(conn, user["id"], user["is_admin"])
+        finally:
+            conn.close()
+        return q
+
     if re.fullmatch(r"\d{5}", raw):
         zipcode = raw
         cached = _cache_get(zipcode, count)
         if cached:
-            return jsonify({"ok": True, "cached": True, "payload": cached})
+            conn = _db()
+            try:
+                leads = _shape_leads(conn, cached.get("leads") or [], user)
+            finally:
+                conn.close()
+            return jsonify({"ok": True, "cached": True,
+                            "payload": {"zip": cached.get("zip"),
+                                        "area": cached.get("area"),
+                                        "leads": leads,
+                                        "scanned_at": cached.get("scanned_at")}})
+        blocked = quota_ok()
+        if blocked:
+            return blocked
         job_id = uuid.uuid4().hex[:12]
         with _jobs_lock:
             _jobs[job_id] = {"status": "running", "phase": "start", "done": 0,
-                             "total": count, "msg": "Starting…", "zip": zipcode}
+                             "total": count, "msg": "Starting…", "zip": zipcode,
+                             "single": False, "owner": user["id"]}
+        quota = use_scan()
         t = threading.Thread(target=_run_scan, args=(job_id, zipcode, count),
                              daemon=True)
         t.start()
-        return jsonify({"ok": True, "job_id": job_id})
+        return jsonify({"ok": True, "job_id": job_id, "quota": quota})
 
     # ...otherwise treat it as a typed street address (interchangeable input)
     if len(raw) < 5:
@@ -347,20 +566,25 @@ def start_scan():
         return jsonify({"ok": False, "error":
                         f"Couldn't locate “{raw}”. Try a full street address "
                         "with city and state."}), 400
+    blocked = quota_ok()
+    if blocked:
+        return blocked
     job_id = uuid.uuid4().hex[:12]
     with _jobs_lock:
         _jobs[job_id] = {"status": "running", "phase": "start", "done": 0,
                          "total": 1, "msg": "Starting…",
-                         "zip": house.get("postcode", "")}
+                         "zip": house.get("postcode", ""),
+                         "single": True, "owner": user["id"]}
+    quota = use_scan()
     t = threading.Thread(target=_run_address_scan, args=(job_id, house),
                          daemon=True)
     t.start()
-    return jsonify({"ok": True, "job_id": job_id})
+    return jsonify({"ok": True, "job_id": job_id, "quota": quota})
 
 
 @app.get("/api/scan/<job_id>")
 def scan_status(job_id: str):
-    _, err = _require_user()
+    user, err = _require_user()
     if err:
         return err
     with _jobs_lock:
@@ -371,11 +595,79 @@ def scan_status(job_id: str):
            "phase": job.get("phase"), "done": job.get("done", 0),
            "total": job.get("total", 0), "msg": job.get("msg", "")}
     if job["status"] == "done":
-        out["leads"] = job["leads"]
+        conn = _db()
+        try:
+            out["leads"] = _shape_leads(conn, job["leads"], user,
+                                       single=job.get("single", False))
+        finally:
+            conn.close()
         out["area"] = job.get("area")
     if job["status"] == "error":
         out["error"] = job.get("error")
     return jsonify(out)
+
+
+@app.post("/api/leads/unlock")
+def unlock_lead():
+    """Trial: spend one unlock to reveal a lead's full address."""
+    user, err = _require_user()
+    if err:
+        return err
+    body = request.get_json(force=True, silent=True) or {}
+    lead_key = str(body.get("lead_key", "")).strip()
+    if not lead_key:
+        return jsonify({"ok": False, "error": "Missing lead."}), 400
+    conn = _db()
+    try:
+        quota = _quota(conn, user["id"], user["is_admin"])
+        if quota["plan"] != "trial" or user["is_admin"]:
+            return jsonify({"ok": True, "quota": quota,
+                            "note": "Your plan includes every address."})
+        if conn.execute("SELECT 1 FROM unlocks WHERE user_id=? AND lead_key=?",
+                        (user["id"], lead_key)).fetchone():
+            return jsonify({"ok": True, "quota": quota})
+        if quota["unlocks_left"] <= 0:
+            return jsonify({"ok": False, "error": "trial_unlocks_exhausted",
+                            "quota": quota}), 402
+        conn.execute("INSERT INTO unlocks (user_id, lead_key, unlocked_at)"
+                     " VALUES (?,?,?)", (user["id"], lead_key, time.time()))
+        conn.execute("UPDATE users SET trial_unlocks_used=trial_unlocks_used+1"
+                     " WHERE id=?", (user["id"],))
+        conn.commit()
+        quota = _quota(conn, user["id"], False)
+    finally:
+        conn.close()
+    lead = _find_lead(lead_key)
+    if lead:
+        lead = {**lead, "lead_key": lead_key, "locked": False}
+    return jsonify({"ok": True, "quota": quota, "lead": lead})
+
+
+@app.post("/api/admin/set-plan")
+def admin_set_plan():
+    """Owner-only: move an account to a paid plan (until Stripe billing lands)."""
+    user, err = _require_user()
+    if err or not user.get("is_admin"):
+        return jsonify({"ok": False, "error": "admin_required"}), 403
+    body = request.get_json(force=True, silent=True) or {}
+    email = str(body.get("email", "")).strip().lower()
+    plan = str(body.get("plan", "")).strip().lower()
+    if plan not in PLANS:
+        return jsonify({"ok": False,
+                        "error": f"Plan must be one of: {', '.join(PLANS)}"}), 400
+    conn = _db()
+    try:
+        cur = conn.execute("SELECT id FROM users WHERE email=?", (email,))
+        row = cur.fetchone()
+        if not row:
+            return jsonify({"ok": False, "error": "No such account."}), 404
+        conn.execute("UPDATE users SET plan=?, cycle_scans_used=0,"
+                     " period_start=? WHERE id=?",
+                     (plan, time.time(), row[0]))
+        conn.commit()
+    finally:
+        conn.close()
+    return jsonify({"ok": True, "email": email, "plan": plan})
 
 
 @app.get("/")

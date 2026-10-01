@@ -85,6 +85,15 @@
     .auth-err { color: #f87171; font-size: 13px; margin-top: 10px; min-height: 18px; }
     #userChip { display: flex; align-items: center; gap: 10px; font-size: 13px; color: #cbd5e1; }
     #userChip button { background: #1e293b; color: #cbd5e1; border: 1px solid #334155; border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 12px; }
+
+    /* Trial banner + locked leads */
+    #trialBanner { background: #fef3c7; border-bottom: 1px solid #f59e0b; color: #92400e; font-size: 13px; padding: 8px 20px; display: flex; gap: 12px; align-items: center; justify-content: center; flex-wrap: wrap; }
+    #trialBanner b { font-weight: 800; }
+    #trialBanner button { background: #f59e0b; color: #1c1005; border: none; border-radius: 6px; padding: 6px 14px; font-weight: 700; font-size: 13px; cursor: pointer; }
+    .locked-card { border: 2px dashed #f59e0b !important; background: #fffbeb !important; }
+    .btn-unlock { background: #f59e0b; color: #1c1005; border: none; font-weight: 700; cursor: pointer; font-size: 12px; padding: 6px 12px; border-radius: 4px; }
+    .btn-unlock:hover { background: #d97706; }
+    .lock-note { font-size: 12px; color: #92400e; margin-top: 8px; }
   </style>
 </head>
 <body>
@@ -143,6 +152,7 @@
       <div id="userChip" class="hidden"><span id="userEmail"></span><button onclick="doLogout()">Log out</button></div>
     </div>
   </header>
+  <div id="trialBanner" class="hidden"></div>
   <div id="coPanel" class="hidden">
     <b style="font-size:14px;">Your company (prints on letters)</b>
     <label>Company name</label><input id="coName" placeholder="Apex Roofing">
@@ -184,6 +194,7 @@
       { attribution: '&copy; OpenStreetMap contributors' }).addTo(map);
     let markers = [];
     let currentLeads = [];
+    let lastArea = '';
 
     const gradeColors = { 1: '#dc2626', 2: '#ea580c', 3: '#d97706', 4: '#16a34a', 5: '#059669', 0: '#64748b' };
     const gradeLabels = { 1: 'Failing (Replace)', 2: 'Worn (Repair Soon)', 3: 'Aging (Watch)', 4: 'Healthy', 5: 'Solid', 0: 'Unclear' };
@@ -243,7 +254,19 @@
         });
         const data = await res.json();
         if (data.error === 'login_required') { showAuth(); return; }
+        if (data.error === 'trial_scans_exhausted' || res.status === 402) {
+          if (data.quota) setQuota(data.quota);
+          sidebar.innerHTML = `<div class="card" style="border:2px solid #f59e0b;">
+            <h3 style="margin-top:0;">🧪 Trial scan used up</h3>
+            <p style="font-size:14px; color:#334155;">Your free trial includes <b>1 ZIP scan</b> and <b>5 lead unlocks</b>.
+            Upgrade to keep hunting roofs — <b>Starter $49/mo</b> (2 scans/mo) or <b>Pro $99/mo</b> (8 scans/mo),
+            every address included, nothing shared with competitors.</p>
+            <p style="font-size:13px; color:#64748b;">Angi charges $40–$110 for a single lead shared with 3–8 other roofers.
+            Roof Scout leads are exclusive to you.</p></div>`;
+          return;
+        }
         if (!data.ok) throw new Error(data.error || "Search failed");
+        if (data.quota) setQuota(data.quota);
         if (data.cached) { renderResults(data.payload.leads || [], data.payload.area); }
         else { await pollJob(data.job_id); }
       } catch (err) {
@@ -282,6 +305,7 @@
       markers.forEach((m) => map.removeLayer(m));
       markers = [];
       currentLeads = leads;
+      lastArea = area || '';
       const sidebar = $('sidebar');
       sidebar.innerHTML = "";
 
@@ -307,9 +331,31 @@
         const repairs = (lead.repair_breakdown || []).map((r) =>
           `<li><b>${esc(r.issue)}</b>${r.fix ? `<br><span class="dim">Fix: ${esc(r.fix)}</span>` : ''}</li>`).join('');
         const hook = esc(buildHook(lead, company()));
+        const locked = !!lead.locked;
+        const unlocksLeft = currentUser && currentUser.quota ? currentUser.quota.unlocks_left : 0;
 
         const card = document.createElement('div');
-        card.className = 'card';
+        card.className = 'card' + (locked ? ' locked-card' : '');
+        const mapsBtn = lead.maps_url ? `<a class="btn-link" href="${esc(lead.maps_url)}" target="_blank">Google Maps</a>` : '';
+        const svBtn = lead.streetview_url ? `<a class="btn-link" href="${esc(lead.streetview_url)}" target="_blank">Street View</a>` : '';
+        const actionsHtml = locked ? `
+            <div class="lock-note">🔒 <b>Exact address locked</b> — this is one of your trial preview leads.
+            Unlock it to reveal the full address, mailer, and map links.</div>
+            <div class="card-actions">
+              <button class="btn-unlock" data-i="${idx}" onclick="unlockLead(${idx})">🔓 Unlock this lead (${unlocksLeft} left)</button>
+            </div>
+          ` : (lead.grade === 1 || lead.grade === 2) ? `
+            <div class="section-title">Pitch / Outbound Hook:</div>
+            <div class="pitch-box">"${hook}"</div>
+            <div class="card-actions">
+              <button class="btn-mail" data-i="${idx}">✉️ Draft Direct Mail</button>
+              <button class="btn-edit" data-i="${idx}">Edit pitch</button>
+              ${mapsBtn}${svBtn}
+            </div>
+            <textarea class="pitch-editor hidden" data-i="${idx}">${hook}</textarea>
+          ` : `
+            <div class="card-actions">${mapsBtn}${svBtn}</div>
+          `;
         card.innerHTML = `
           <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
             <span class="badge grade-${lead.grade}">Grade ${lead.grade} · ${gradeLabels[lead.grade] || ''}</span>
@@ -325,22 +371,7 @@
           ${ev ? `<div class="section-title">Visual Evidence:</div><ul>${ev}</ul>` : ''}
           ${repairs ? `<div class="section-title">What needs done:</div><ul>${repairs}</ul>` : ''}
 
-          ${(lead.grade === 1 || lead.grade === 2) ? `
-            <div class="section-title">Pitch / Outbound Hook:</div>
-            <div class="pitch-box">"${hook}"</div>
-            <div class="card-actions">
-              <button class="btn-mail" data-i="${idx}">✉️ Draft Direct Mail</button>
-              <button class="btn-edit" data-i="${idx}">Edit pitch</button>
-              <a class="btn-link" href="${esc(lead.maps_url)}" target="_blank">Google Maps</a>
-              <a class="btn-link" href="${esc(lead.streetview_url)}" target="_blank">Street View</a>
-            </div>
-            <textarea class="pitch-editor hidden" data-i="${idx}">${hook}</textarea>
-          ` : `
-            <div class="card-actions">
-              <a class="btn-link" href="${esc(lead.maps_url)}" target="_blank">Google Maps</a>
-              <a class="btn-link" href="${esc(lead.streetview_url)}" target="_blank">Street View</a>
-            </div>
-          `}
+          ${actionsHtml}
         `;
         sidebar.appendChild(card);
 
@@ -375,6 +406,7 @@
     function openMailDraft(idx) {
       const lead = currentLeads[idx];
       if (!lead) return;
+      if (lead.locked) { alert('Unlock this lead first to draft its letter.'); return; }
       const co = company();
       const hook = editedHook(idx) || buildHook(lead, co);
       const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
@@ -427,10 +459,14 @@
     /* ---------- CSV ---------- */
     function exportCSV() {
       if (!currentLeads.length) { alert('Run a scan first.'); return; }
+      const usable = currentLeads.filter((l) => !l.locked);
+      if (!usable.length) { alert('No unlocked leads yet — unlock a lead to export it.'); return; }
+      if (usable.length < currentLeads.length)
+        alert(`Exporting ${usable.length} unlocked lead${usable.length === 1 ? '' : 's'}. Locked trial leads are excluded.`);
       const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
       const rows = [['address', 'city', 'state', 'postcode', 'county', 'lat', 'lng', 'grade',
         'confidence', 'material', 'pitch', 'evidence', 'what_needs_done', 'maps_url']];
-      currentLeads.forEach((l) => rows.push([
+      usable.forEach((l) => rows.push([
         l.address, l.city, l.state, l.postcode, l.county, l.lat, l.lng, l.grade,
         l.confidence, l.material, l.pitch, (l.evidence || []).join(' | '),
         (l.repair_breakdown || []).map((r) => `${r.issue} -> ${r.fix || ''}`).join(' | '),
@@ -476,6 +512,7 @@
       hideAuth();
       $('userChip').classList.remove('hidden');
       $('userEmail').textContent = (u.company_name && u.account_type === 'company' ? u.company_name + ' · ' : '') + u.email;
+      setQuota(u.quota);
       try {
         if (u.account_type === 'company' && u.company_name) {
           const raw = localStorage.getItem('rs_company');
@@ -483,6 +520,48 @@
           if (!co.name) { co.name = u.company_name; localStorage.setItem('rs_company', JSON.stringify(co)); }
         }
       } catch (e) {}
+    }
+    function setQuota(q) {
+      if (!q) return;
+      if (currentUser) currentUser.quota = q;
+      const b = $('trialBanner');
+      if (q.plan === 'trial') {
+        const s = q.scans_left, u = q.unlocks_left;
+        b.classList.remove('hidden');
+        b.innerHTML = `<span>🧪 <b>Free trial</b> — ${s} ZIP scan${s === 1 ? '' : 's'} left · ${u} lead unlock${u === 1 ? '' : 's'} left</span>
+          <button onclick="alert('Plans: Starter $49/mo (2 scans/mo), Pro $99/mo (8 scans/mo). Every address included. Contact us to upgrade.')">Upgrade</button>`;
+      } else {
+        const s = q.scans_left < 0 ? '∞' : q.scans_left;
+        b.classList.remove('hidden');
+        b.style.background = '#ecfdf5'; b.style.borderBottom = '1px solid #10b981'; b.style.color = '#065f46';
+        b.innerHTML = `<span>✅ <b>${esc(q.plan_name)}</b> — ${s} scans left this cycle</span>`;
+      }
+    }
+    async function unlockLead(idx) {
+      const lead = currentLeads[idx];
+      if (!lead || !lead.lead_key) return;
+      const btns = document.querySelectorAll(`.btn-unlock[data-i="${idx}"]`);
+      btns.forEach((x) => { x.disabled = true; x.textContent = 'Unlocking…'; });
+      try {
+        const r = await fetch('/api/leads/unlock', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ lead_key: lead.lead_key })
+        });
+        const d = await r.json();
+        if (d.error === 'trial_unlocks_exhausted' || r.status === 402) {
+          if (d.quota) setQuota(d.quota);
+          alert('You have used all 5 free unlocks. Upgrade to Starter ($49/mo) or Pro ($99/mo) for every address.');
+          renderResults(currentLeads, lastArea);
+          return;
+        }
+        if (!d.ok) throw new Error(d.error || 'Unlock failed');
+        if (d.quota) setQuota(d.quota);
+        if (d.lead) currentLeads[idx] = d.lead;
+        renderResults(currentLeads, lastArea);
+      } catch (e) {
+        alert('Unlock failed: ' + e.message);
+        renderResults(currentLeads, lastArea);
+      }
     }
     async function doLogin() {
       $('authErr').textContent = '';
@@ -509,6 +588,7 @@
       await fetch('/api/auth/logout', { method: 'POST' });
       currentUser = null;
       $('userChip').classList.add('hidden');
+      $('trialBanner').classList.add('hidden');
       showAuth();
     }
 
