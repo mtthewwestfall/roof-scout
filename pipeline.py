@@ -23,6 +23,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+import zlib
 from concurrent.futures import ThreadPoolExecutor
 
 from PIL import Image, ImageStat
@@ -320,6 +321,9 @@ def _shape_houses(buildings: list[dict], ctx: dict, city: str,
     return houses
 
 
+MICRO_SCAN_POOL = 200
+
+
 def candidate_roofs(zipcode: str, center, count: int, progress=None,
                     exclude_cells=None) -> list[dict]:
     """Full deduplicated candidate pool for rotation + damage triage.
@@ -331,18 +335,26 @@ def candidate_roofs(zipcode: str, center, count: int, progress=None,
     exclude_cells = exclude_cells or set()
     lat0, lng0, _display, city = center
     ctx: dict = {}
-    pool = _footprint_pool(zipcode, center, 180)
+    pool = _footprint_pool(zipcode, center, MICRO_SCAN_POOL * 2)
     if pool:
         ctx = _area_context(lat0, lng0)
+    vacant_cells = {_cell_of(b["lat"], b["lng"]) for b in pool
+                    if b.get("vacant")}
     pool = [b for b in pool
-            if _cell_of(b["lat"], b["lng"]) not in exclude_cells]
-    houses = _shape_houses(pool, ctx, city, zipcode)
-    if len(houses) < count:
-        have = {_cell_of(h["lat"], h["lng"]) for h in houses} | exclude_cells
-        grid = _grid_points(zipcode, center, count - len(houses),
+            if not b.get("vacant")
+            and _cell_of(b["lat"], b["lng"]) not in exclude_cells]
+    pool.sort(key=lambda b: (b["lat"] - lat0) ** 2 + (b["lng"] - lng0) ** 2)
+    houses = _shape_houses(pool[:MICRO_SCAN_POOL], ctx, city, zipcode)
+    want = max(count, MICRO_SCAN_POOL)
+    if len(houses) < want:
+        have = ({_cell_of(h["lat"], h["lng"]) for h in houses}
+                | exclude_cells | vacant_cells)
+        grid = _grid_points(zipcode, center, want - len(houses),
                             progress=progress,
-                            base=len(houses), total=count)
+                            base=len(houses), total=want, exclude=have)
         for g in grid:
+            if len(houses) >= want:
+                break
             cell = _cell_of(g["lat"], g["lng"])
             if cell in have:
                 continue
@@ -405,36 +417,46 @@ def sample_addresses(zipcode: str, center, count: int, progress=None):
     return sample_roofs(zipcode, center, count, progress)
 
 
+_GRID_SPACING_KM = 0.275  # ~200 points inside the first 2.2km
+_GRID_MAX_KM = 8.8
+
+
+def _jitter(key: str) -> float:
+    return (zlib.crc32(key.encode()) % 1000) / 1000 - 0.5
+
+
 def _grid_points(zipcode: str, center, count: int, progress=None,
-                 base: int = 0, total: int | None = None):
+                 base: int = 0, total: int | None = None, exclude=None):
     """Jittered-grid sweep points (fallback). Pure image search: no addresses
     are resolved here — damaged roofs found on these cells get matched to
-    addresses after grading."""
+    addresses after grading.
+
+    Fixed ~275m spacing, nearest first, out to _GRID_MAX_KM. Cells in
+    `exclude` (already checked) are skipped, so each repeat scan widens the
+    sweep past the roofs it already covered. Jitter is deterministic so the
+    same ZIP yields the same points across restarts."""
+    exclude = exclude or set()
     lat0, lng0 = center[0], center[1]
     total = total or count
-    # ~2.2km radius grid; denser near the middle
-    radius_km = 2.2
-    steps = 9
+    cosla = math.cos(math.radians(lat0))
+    n = int(_GRID_MAX_KM / _GRID_SPACING_KM)
     pts = []
-    for i in range(steps):
-        for j in range(steps):
-            dx = (i - (steps - 1) / 2) / ((steps - 1) / 2)
-            dy = (j - (steps - 1) / 2) / ((steps - 1) / 2)
-            if dx * dx + dy * dy > 1.0:
+    for i in range(-n, n + 1):
+        for j in range(-n, n + 1):
+            dx = i * _GRID_SPACING_KM + _jitter(f"{zipcode}{i}{j}a") * 0.12
+            dy = j * _GRID_SPACING_KM + _jitter(f"{zipcode}{i}{j}b") * 0.12
+            d = math.hypot(dx, dy)
+            if d > _GRID_MAX_KM:
                 continue
-            # jitter so repeat scans vary a little
-            jx = (hash(f"{zipcode}{i}{j}a") % 1000) / 1000 - 0.5
-            jy = (hash(f"{zipcode}{i}{j}b") % 1000) / 1000 - 0.5
-            lat = lat0 + (dy * radius_km + jy * 0.12) / 111.0
-            lng = lng0 + (dx * radius_km + jx * 0.12) / (111.0 * math.cos(math.radians(lat0)))
-            pts.append((lat, lng))
-    # inside-out order: best cells first
-    pts.sort(key=lambda p: (p[0] - lat0) ** 2 + (p[1] - lng0) ** 2)
+            pts.append((d, lat0 + dy / 111.0, lng0 + dx / (111.0 * cosla)))
+    pts.sort()
 
     found = []
-    for la, ln in pts:
+    for _d, la, ln in pts:
         if len(found) >= count:
             break
+        if _cell_of(la, ln) in exclude:
+            continue
         if progress:
             progress("roofs", base + len(found), total,
                      f"Sweeping imagery grid… {base + len(found)}/{total}")
@@ -1070,7 +1092,7 @@ def grade_roofs(api_key: str, houses: list[dict], progress=None,
     return houses
 
 
-PRESCREEN_PROMPT = """You are a roof triage assistant. For EACH image in order (most are aerial views; a few may be street-level photos of the house), reply with ONLY a JSON array of integers — one per image — rating visible roof condition 1 (pristine) to 5 (severe damage). Use 0 when the roof cannot be seen at all (heavy tree cover, no building visible). Solar panels are NOT damage. Example: [2,0,4]"""
+PRESCREEN_PROMPT = """You are a roof triage assistant. For EACH image in order (most are aerial views; a few may be street-level photos of the house), reply with ONLY a JSON array of integers — one per image — rating visible roof condition: 1 = pristine, 2 = normal aging only, 3 = visible wear and tear (granule loss, curling or faded shingles, moss, patching), 4 = clear damage (missing shingles, exposed underlayment, sagging), 5 = severe damage or failure. Use 0 when the roof cannot be seen at all (heavy tree cover, no building visible). Solar panels are NOT damage. Example: [2,0,4]"""
 
 
 def _prescreen_call(api_key: str, b64_list: list[str]) -> list[int] | None:
@@ -1106,8 +1128,8 @@ def prescreen_damage(api_key: str, cands: list[dict], count: int,
 
     Fetches a z=19 crop per candidate and scores damage 1 (pristine) to 5
     (severe) with one tiny Gemini call per 8 roofs. Returns at most `count`
-    candidates with a damage score >= 3 (visible damage), worst first —
-    pristine/minor (1-2) and unverifiable (0) roofs never earn the expensive
+    candidates with a damage score >= 3 (wear and tear or worse), worst
+    first — pristine/aging (1-2) and unverifiable (0) roofs never earn the expensive
     deep scan. Buildings flagged vacant/abandoned in the public map records
     keep their `vacant` flag through triage so the deep scan can confirm or
     clear them — they are flagged for review, never silently dropped.
@@ -1163,6 +1185,8 @@ def prescreen_damage(api_key: str, cands: list[dict], count: int,
         list(ex.map(triage, batches))
     if not scored:
         return _stride_fallback(cands, count)
+    for i, v in scored.items():
+        cands[i]["micro_score"] = v
     # Worst first, but only visibly damaged roofs (score >= 3) earn the
     # deep scan. Pristine/minor (1-2) and unverifiable (0) never do.
     ranked = sorted(scored, key=lambda i: -scored[i])

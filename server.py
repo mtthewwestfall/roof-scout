@@ -1005,14 +1005,27 @@ def _run_scan(job_id: str, zipcode: str, count: int, user_id=None,
             # No grader available (local dev without API key): geographic
             # stride through the rotation-aware candidate pool.
             houses = pipeline._stride_fallback(cands, count)
+        # Every micro-scanned roof counts as seen, lead or not, so the next
+        # scan of this ZIP triages roofs farther out.
+        triaged = [c for c in cands if "micro_score" in c]
         if not houses:
-            _fail_job(job_id, "No addresses found near that zip. Try another."
-                      " Your scan was refunded.")
+            if triaged:
+                _record_seen(user_id, zipcode, triaged)
+                _fail_job(job_id, f"No damaged roofs among the {len(triaged)}"
+                          " roofs checked. Scan again to check roofs farther"
+                          " out. Your scan was refunded.")
+            else:
+                _fail_job(job_id, "No addresses found near that zip."
+                          " Try another. Your scan was refunded.")
             return
         for h in houses:
             h["key"] = (h.get("address") or "") + "|" + h.get("postcode", "")
         _run_houses(job_id, houses, center[2], cache=(zipcode, count),
                     grader=grader, user_id=user_id)
+        with _jobs_lock:
+            ok = _jobs[job_id].get("status") == "done"
+        if ok:
+            _record_seen(user_id, zipcode, triaged)
     except Exception as e:
         _fail_job(job_id, f"Scan failed: {e}. Your scan was refunded.")
 
