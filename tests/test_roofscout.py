@@ -32,7 +32,7 @@ def app_client(db):
     return server.app.test_client()
 
 
-def signup(client, email, password="password123", account_type="individual",
+def signup(client, email, password="TestPass99!", account_type="individual",
            company_name=""):
     r = client.post("/api/auth/signup", json={
         "email": email, "password": password,
@@ -602,3 +602,134 @@ class TestObscuredVerdict:
         out = pipeline.grade_roofs("key", houses, grader=grader)
         assert out[0]["verdict"] == "tree-obscured"
         assert out[0]["verdict_note"]
+
+
+# ---------------- security hardening (2026-10-01) ----------------
+
+class TestPasswordPolicy:
+    def test_common_password_rejected(self, app_client):
+        r = signup(app_client, "a@t.com", password="password")
+        assert r.status_code == 400
+        assert "too common" in r.get_json()["error"]
+
+    def test_common_password_case_insensitive(self, app_client):
+        r = signup(app_client, "b@t.com", password="Password123")
+        assert r.status_code == 400
+
+    def test_short_password_still_rejected(self, app_client):
+        r = signup(app_client, "c@t.com", password="short1")
+        assert r.status_code == 400
+
+    def test_strong_password_accepted(self, app_client):
+        r = signup(app_client, "d@t.com", password="Truly-Unique-99!")
+        assert r.status_code == 200
+
+
+class TestSecurityHeaders:
+    def test_headers_present(self, app_client):
+        r = app_client.get("/")
+        assert r.headers.get("Strict-Transport-Security", "").startswith(
+            "max-age=31536000")
+        assert r.headers.get("X-Content-Type-Options") == "nosniff"
+        assert r.headers.get("X-Frame-Options") == "SAMEORIGIN"
+        assert "frame-ancestors 'self'" in r.headers.get(
+            "Content-Security-Policy", "")
+
+    def test_csp_allows_leaflet_and_tiles(self, app_client):
+        csp = app_client.get("/").headers.get("Content-Security-Policy", "")
+        assert "https://unpkg.com" in csp
+        assert "data:" in csp
+
+
+class TestFailedScanRefund:
+    def _user_with_scan(self, app_client, email="r@t.com"):
+        r = signup(app_client, email)
+        assert r.status_code == 200
+        conn = server._db()
+        try:
+            row = conn.execute("SELECT id FROM users WHERE email=?",
+                               (email,)).fetchone()
+            uid = row[0]
+            server._consume_scan(conn, uid, False)
+            used = conn.execute("SELECT trial_scans_used FROM users"
+                                " WHERE id=?", (uid,)).fetchone()[0]
+            assert used == 1
+        finally:
+            conn.close()
+        return uid
+
+    def test_fail_job_refunds_trial_scan(self, app_client, db):
+        uid = self._user_with_scan(app_client)
+        server._jobs["jobxyz"] = {"status": "running", "owner": uid}
+        server._fail_job("jobxyz", "boom")
+        assert server._jobs["jobxyz"]["status"] == "error"
+        conn = server._db()
+        try:
+            used = conn.execute("SELECT trial_scans_used FROM users"
+                                " WHERE id=?", (uid,)).fetchone()[0]
+        finally:
+            conn.close()
+        assert used == 0
+
+    def test_refund_never_goes_negative(self, app_client, db):
+        uid = self._user_with_scan(app_client)
+        conn = server._db()
+        try:
+            server._refund_scan(conn, uid)   # 1 -> 0
+            server._refund_scan(conn, uid)   # stays 0
+            used = conn.execute("SELECT trial_scans_used FROM users"
+                                " WHERE id=?", (uid,)).fetchone()[0]
+        finally:
+            conn.close()
+        assert used == 0
+
+
+class TestLoginThrottle:
+    def test_throttle_helpers(self):
+        server._login_attempts.clear()
+        for _ in range(8):
+            assert not server._login_throttled("1.2.3.4", "e@t.com")
+            server._login_failed("1.2.3.4", "e@t.com")
+        assert server._login_throttled("1.2.3.4", "e@t.com")
+        server._login_ok("1.2.3.4", "e@t.com")
+        assert not server._login_throttled("1.2.3.4", "e@t.com")
+
+    def test_endpoint_throttles_after_8_bad_logins(self, app_client):
+        signup(app_client, "f@t.com")
+        for _ in range(8):
+            r = app_client.post("/api/auth/login",
+                                json={"email": "f@t.com",
+                                      "password": "wrong-pw"})
+            assert r.status_code == 401
+        r = app_client.post("/api/auth/login",
+                            json={"email": "f@t.com",
+                                  "password": "wrong-pw"})
+        assert r.status_code == 429
+
+
+class TestUnlockRace:
+    def test_duplicate_unlock_free_after_race(self, app_client, db):
+        r = signup(app_client, "g@t.com")
+        assert r.status_code == 200
+        conn = server._db()
+        try:
+            uid = conn.execute("SELECT id FROM users WHERE email=?",
+                               ("g@t.com",)).fetchone()[0]
+            # Simulate the race winner already inserting the row.
+            conn.execute("INSERT INTO unlocks (user_id, lead_key, unlocked_at)"
+                         " VALUES (?,?,?)", (uid, "race-key-1", time.time()))
+            conn.execute("UPDATE users SET trial_unlocks_used=1 WHERE id=?",
+                         (uid,))
+            conn.commit()
+        finally:
+            conn.close()
+        # The SELECT-then-INSERT loser path is covered by the early-return;
+        # exercise the endpoint for a genuinely new key too.
+        r = app_client.post("/api/leads/unlock", json={"lead_key": "k2"})
+        assert r.status_code == 200
+        q = r.get_json()["quota"]
+        assert q["unlocks_used"] == 2
+        # Duplicate unlock of k2 stays free.
+        r = app_client.post("/api/leads/unlock", json={"lead_key": "k2"})
+        assert r.status_code == 200
+        assert r.get_json()["quota"]["unlocks_used"] == 2

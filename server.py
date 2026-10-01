@@ -12,11 +12,90 @@ import threading
 import time
 import uuid
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, redirect, request, send_from_directory
 
 import pipeline
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
+
+
+@app.before_request
+def _force_https():
+    # Railway terminates TLS and sets X-Forwarded-Proto. Redirect any
+    # plain-HTTP hit to HTTPS (except local dev) so credentials and
+    # session cookies never travel in the clear.
+    host = (request.host or "").split(":")[0]
+    if host in ("localhost", "127.0.0.1"):
+        return None
+    if request.headers.get("X-Forwarded-Proto", "http") != "https" \
+            and not request.is_secure:
+        return redirect(request.url.replace("http://", "https://", 1),
+                        code=301)
+    return None
+
+
+@app.after_request
+def _security_headers(resp):
+    resp.headers["Strict-Transport-Security"] = \
+        "max-age=31536000; includeSubDomains"
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["X-Frame-Options"] = "SAMEORIGIN"
+    resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    # App uses inline scripts/styles plus Leaflet from unpkg and map
+    # tiles / data-URI imagery, so script/style stay 'unsafe-inline'
+    # while framing, plugins and base-uri stay locked down.
+    resp.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' https://unpkg.com; "
+        "style-src 'self' 'unsafe-inline' https://unpkg.com; "
+        "img-src 'self' data: https:; "
+        "connect-src 'self'; "
+        "frame-ancestors 'self'; "
+        "object-src 'none'; "
+        "base-uri 'self'")
+    return resp
+
+
+# Common passwords rejected at signup (case-insensitive). Short curated
+# list covering the worst offenders; length minimum still applies.
+_COMMON_PASSWORDS = frozenset({
+    "password", "password1", "password123", "passw0rd", "qwerty",
+    "qwerty123", "12345678", "123456789", "1234567890", "abc123",
+    "letmein", "welcome", "welcome1", "monkey", "dragon", "football",
+    "iloveyou", "trustno1", "sunshine", "master", "shadow", "superman",
+    "roofing", "roofing1", "roofer", "roofer123", "changeme",
+})
+
+# Lightweight in-memory login throttle: (ip, email) -> [timestamps].
+# 8 failed attempts in 10 minutes -> 60s cooldown. Survives nothing;
+# it only needs to slow automated guessing, not be a perfect record.
+_login_attempts: dict[tuple[str, str], list[float]] = {}
+_login_attempts_lock = threading.Lock()
+_LOGIN_MAX_FAILS = 8
+_LOGIN_WINDOW = 600.0
+_LOGIN_COOLDOWN = 60.0
+
+
+def _login_throttled(ip: str, email: str) -> bool:
+    now = time.time()
+    key = (ip, email)
+    with _login_attempts_lock:
+        hits = [t for t in _login_attempts.get(key, [])
+                if now - t < _LOGIN_WINDOW]
+        _login_attempts[key] = hits
+        return len(hits) >= _LOGIN_MAX_FAILS and \
+            now - hits[-1] < _LOGIN_COOLDOWN
+
+
+def _login_failed(ip: str, email: str):
+    key = (ip, email)
+    with _login_attempts_lock:
+        _login_attempts.setdefault(key, []).append(time.time())
+
+
+def _login_ok(ip: str, email: str):
+    with _login_attempts_lock:
+        _login_attempts.pop((ip, email), None)
 
 def _default_db_path():
     env = os.environ.get("DB_PATH", "")
@@ -163,6 +242,43 @@ def _consume_unlock(conn, user_id: str, is_admin: bool):
         conn.execute("UPDATE users SET trial_unlocks_used=trial_unlocks_used+1"
                      " WHERE id=?", (user_id,))
     conn.commit()
+
+
+def _refund_scan(conn, user_id: str):
+    """Give a scan back when the job failed (crashed, no imagery, bad zip).
+
+    Mirrors _consume_scan: paid plans draw from the cycle counters, trial
+    from the trial counters. Never drops below zero.
+    """
+    row = conn.execute("SELECT plan FROM users WHERE id=?",
+                       (user_id,)).fetchone()
+    plan = (row[0] if row else "trial") or "trial"
+    if plan in PLANS and PLANS[plan]["cycle_days"]:
+        conn.execute("UPDATE users SET cycle_scans_used="
+                     "max(0, cycle_scans_used-1) WHERE id=?", (user_id,))
+    else:
+        conn.execute("UPDATE users SET trial_scans_used="
+                     "max(0, trial_scans_used-1) WHERE id=?", (user_id,))
+    conn.commit()
+
+
+def _fail_job(job_id: str, error: str):
+    """Mark a scan job failed and refund the owner's consumed scan."""
+    owner = None
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        if job:
+            owner = job.get("owner")
+    _set_job(job_id, status="error", error=error)
+    if owner:
+        try:
+            conn = _db()
+            try:
+                _refund_scan(conn, owner)
+            finally:
+                conn.close()
+        except Exception:
+            pass
 
 
 def _lead_key(lead: dict) -> str:
@@ -336,6 +452,9 @@ def signup():
     if len(password) < 8:
         return jsonify({"ok": False,
                         "error": "Password must be at least 8 characters."}), 400
+    if password.strip().lower() in _COMMON_PASSWORDS:
+        return jsonify({"ok": False,
+                        "error": "That password is too common. Pick something harder to guess."}), 400
     if account_type not in ("individual", "company"):
         return jsonify({"ok": False, "error": "Pick individual or company."}), 400
     if account_type == "company" and not company_name:
@@ -385,14 +504,21 @@ def login():
     body = request.get_json(force=True, silent=True) or {}
     email = str(body.get("email", "")).strip().lower()
     password = str(body.get("password", ""))
+    ip = request.headers.get("X-Forwarded-For",
+                             request.remote_addr or "").split(",")[0].strip()
+    if _login_throttled(ip, email):
+        return jsonify({"ok": False,
+                        "error": "Too many attempts. Wait a minute and try again."}), 429
     conn = _db()
     try:
         row = conn.execute(
             "SELECT id, pw_hash, salt, email, account_type, company_name,"
             " is_admin FROM users WHERE email=?", (email,)).fetchone()
         if not row or _hash_pw(password, row[2]) != row[1]:
+            _login_failed(ip, email)
             return jsonify({"ok": False,
                             "error": "Invalid email or password."}), 401
+        _login_ok(ip, email)
         token = _new_session(conn, row[0])
         user = {"email": row[3], "account_type": row[4],
                 "company_name": row[5], "is_admin": bool(row[6])}
@@ -478,13 +604,15 @@ def _run_houses(job_id: str, houses: list[dict], area: str,
             list(ex.map(grab, houses))
         houses = [h for h in houses if h.get("image_b64")]
         if not houses:
-            _set_job(job_id, status="error",
-                     error="Aerial imagery unavailable right now. Try again in a bit.")
+            _fail_job(job_id,
+                      "Aerial imagery unavailable right now. Try again in a bit."
+                      " Your scan was refunded.")
             return
 
         if not GEMINI_KEY and grader is None:
-            _set_job(job_id, status="error",
-                     error="Grader not configured (missing API key).")
+            _fail_job(job_id,
+                      "Grader not configured (missing API key)."
+                      " Your scan was refunded.")
             return
         pipeline.grade_roofs(GEMINI_KEY, houses, progress, grader=grader)
 
@@ -510,7 +638,7 @@ def _run_houses(job_id: str, houses: list[dict], area: str,
         _set_job(job_id, status="done", leads=leads, area=area,
                  msg=f"Done — {len(leads)} roofs graded.")
     except Exception as e:
-        _set_job(job_id, status="error", error=f"Scan failed: {e}")
+        _fail_job(job_id, f"Scan failed: {e}. Your scan was refunded.")
 
 
 def _run_scan(job_id: str, zipcode: str, count: int, grader=None):
@@ -521,22 +649,22 @@ def _run_scan(job_id: str, zipcode: str, count: int, grader=None):
         _set_job(job_id, phase="ziplookup", msg="Locating zip code…")
         center = pipeline.zip_center(zipcode)
         if not center:
-            _set_job(job_id, status="error",
-                     error="Couldn't find that zip code. Try a valid 5-digit US zip.")
+            _fail_job(job_id, "Couldn't find that zip code."
+                      " Try a valid 5-digit US zip. Your scan was refunded.")
             return
         _set_job(job_id, area=center[2])
 
         houses = pipeline.sample_roofs(zipcode, center, count, progress)
         if not houses:
-            _set_job(job_id, status="error",
-                     error="No addresses found near that zip. Try another.")
+            _fail_job(job_id, "No addresses found near that zip. Try another."
+                      " Your scan was refunded.")
             return
         for h in houses:
             h["key"] = h["address"] + "|" + h["postcode"]
         _run_houses(job_id, houses, center[2], cache=(zipcode, count),
                     grader=grader)
     except Exception as e:
-        _set_job(job_id, status="error", error=f"Scan failed: {e}")
+        _fail_job(job_id, f"Scan failed: {e}. Your scan was refunded.")
 
 
 def _run_address_scan(job_id: str, house: dict, grader=None):
@@ -548,7 +676,7 @@ def _run_address_scan(job_id: str, house: dict, grader=None):
                  msg=f"Located {house['address']}…", area=area)
         _run_houses(job_id, [house], area, cache=None, grader=grader)
     except Exception as e:
-        _set_job(job_id, status="error", error=f"Scan failed: {e}")
+        _fail_job(job_id, f"Scan failed: {e}. Your scan was refunded.")
 
 
 @app.post("/api/scan")
@@ -703,9 +831,16 @@ def unlock_lead():
                                 "quota": quota}), 402
             return jsonify({"ok": False, "error": "unlocks_exhausted",
                             "quota": quota}), 402
-        conn.execute("INSERT INTO unlocks (user_id, lead_key, unlocked_at)"
-                     " VALUES (?,?,?)", (user["id"], lead_key, time.time()))
-        _consume_unlock(conn, user["id"], False)
+        try:
+            conn.execute("INSERT INTO unlocks (user_id, lead_key, unlocked_at)"
+                         " VALUES (?,?,?)",
+                         (user["id"], lead_key, time.time()))
+        except sqlite3.IntegrityError:
+            # Lost a race with another request for the same lead: it is
+            # already unlocked, so treat this as the free duplicate case.
+            pass
+        else:
+            _consume_unlock(conn, user["id"], False)
         quota = _quota(conn, user["id"], False)
     finally:
         conn.close()
