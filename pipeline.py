@@ -320,6 +320,9 @@ def _shape_houses(buildings: list[dict], ctx: dict, city: str,
     return houses
 
 
+MICRO_SCAN_POOL = 200
+
+
 def candidate_roofs(zipcode: str, center, count: int, progress=None,
                     exclude_cells=None) -> list[dict]:
     """Full deduplicated candidate pool for rotation + damage triage.
@@ -331,17 +334,19 @@ def candidate_roofs(zipcode: str, center, count: int, progress=None,
     exclude_cells = exclude_cells or set()
     lat0, lng0, _display, city = center
     ctx: dict = {}
-    pool = _footprint_pool(zipcode, center, 180)
+    pool = _footprint_pool(zipcode, center, MICRO_SCAN_POOL * 2)
     if pool:
         ctx = _area_context(lat0, lng0)
     pool = [b for b in pool
             if _cell_of(b["lat"], b["lng"]) not in exclude_cells]
-    houses = _shape_houses(pool, ctx, city, zipcode)
-    if len(houses) < count:
+    pool.sort(key=lambda b: (b["lat"] - lat0) ** 2 + (b["lng"] - lng0) ** 2)
+    houses = _shape_houses(pool[:MICRO_SCAN_POOL], ctx, city, zipcode)
+    want = max(count, MICRO_SCAN_POOL)
+    if len(houses) < want:
         have = {_cell_of(h["lat"], h["lng"]) for h in houses} | exclude_cells
-        grid = _grid_points(zipcode, center, count - len(houses),
+        grid = _grid_points(zipcode, center, want - len(houses),
                             progress=progress,
-                            base=len(houses), total=count)
+                            base=len(houses), total=want)
         for g in grid:
             cell = _cell_of(g["lat"], g["lng"])
             if cell in have:
@@ -1069,7 +1074,7 @@ def grade_roofs(api_key: str, houses: list[dict], progress=None,
     return houses
 
 
-PRESCREEN_PROMPT = """You are a roof triage assistant. For EACH image in order (most are aerial views; a few may be street-level photos of the house), reply with ONLY a JSON array of integers — one per image — rating visible roof condition 1 (pristine) to 5 (severe damage). Use 0 when the roof cannot be seen at all (heavy tree cover, no building visible). Solar panels are NOT damage. Example: [2,0,4]"""
+PRESCREEN_PROMPT = """You are a roof triage assistant. For EACH image in order (most are aerial views; a few may be street-level photos of the house), reply with ONLY a JSON array of integers — one per image — rating visible roof condition: 1 = pristine, 2 = normal aging only, 3 = visible wear and tear (granule loss, curling or faded shingles, moss, patching), 4 = clear damage (missing shingles, exposed underlayment, sagging), 5 = severe damage or failure. Use 0 when the roof cannot be seen at all (heavy tree cover, no building visible). Solar panels are NOT damage. Example: [2,0,4]"""
 
 
 def _prescreen_call(api_key: str, b64_list: list[str]) -> list[int] | None:
@@ -1105,8 +1110,8 @@ def prescreen_damage(api_key: str, cands: list[dict], count: int,
 
     Fetches a z=19 crop per candidate and scores damage 1 (pristine) to 5
     (severe) with one tiny Gemini call per 8 roofs. Returns at most `count`
-    candidates with a damage score >= 3 (visible damage), worst first —
-    pristine/minor (1-2) and unverifiable (0) roofs never earn the expensive
+    candidates with a damage score >= 3 (wear and tear or worse), worst
+    first — pristine/aging (1-2) and unverifiable (0) roofs never earn the expensive
     deep scan. Buildings flagged vacant/abandoned in the public map records
     are dropped before triage so they never waste a lead. Falls back to
     geographic stride when triage fails. prescreener() is a test hook like

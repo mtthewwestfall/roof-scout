@@ -816,6 +816,36 @@ class TestRotation:
         assert all(pipeline._cell_of(h["lat"], h["lng"]) not in excl
                    for h in again)
 
+    def test_candidate_pool_is_nearest_200(self, monkeypatch):
+        pool = [{"lat": 39.0 + i * 0.001, "lng": -80.0, "address": "",
+                 "building": "house"} for i in range(260)]
+        asked = {}
+        def fake_overpass(z, la, ln, limit=120):
+            asked["limit"] = limit
+            return pool
+        monkeypatch.setattr(pipeline, "_overpass_buildings", fake_overpass)
+        monkeypatch.setattr(pipeline, "_area_context", lambda *a: {})
+        monkeypatch.setattr(pipeline, "_grid_points",
+                            lambda *a, **k: pytest.fail("grid used"))
+        center = (39.1, -80.0, "X", "City")
+        out = pipeline.candidate_roofs("12345", center, 20)
+        assert len(out) == pipeline.MICRO_SCAN_POOL == 200
+        assert asked["limit"] >= 200
+        far = max(abs(h["lat"] - 39.1) for h in out)
+        assert far <= 0.1 + 1e-9
+
+    def test_thin_footprints_topped_up_to_200(self, monkeypatch):
+        monkeypatch.setattr(pipeline, "_overpass_buildings",
+                            lambda *a, **k: [])
+        monkeypatch.setattr(pipeline, "_area_context", lambda *a: {})
+        asked = {}
+        def fake_grid(z, c, n, **k):
+            asked["n"] = n
+            return []
+        monkeypatch.setattr(pipeline, "_grid_points", fake_grid)
+        pipeline.candidate_roofs("12345", (39.0, -80.0, "X", "City"), 20)
+        assert asked["n"] == 200
+
     def test_cached_scan_not_served_after_seen(self, app_client, monkeypatch):
         # A cached ZIP is NOT served to a customer who already saw those
         # roofs; they get a fresh scan job for new rooftops instead.
