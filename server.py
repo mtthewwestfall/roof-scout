@@ -655,6 +655,18 @@ def _run_houses(job_id: str, houses: list[dict], area: str,
             return
         pipeline.grade_roofs(GEMINI_KEY, houses, progress, grader=grader)
 
+        # Damaged only: the deep dive (pinpoint + addresses) runs solely on
+        # roofs the grader flagged 1-3. Healthy (4-5), ungradable (0), and
+        # abandoned/derelict properties are not leads and never reach the
+        # customer.
+        houses = [h for h in houses
+                  if h.get("grade") in (1, 2, 3) and not h.get("abandoned")]
+        if not houses:
+            _set_job(job_id, status="done", leads=[], area=area,
+                     msg="Done — no visibly damaged roofs found in this area. "
+                         "Try another ZIP.")
+            return
+
         # Pinpoint pass: zoomed damage close-up + repair breakdown for
         # damaged roofs (needs the graded image still in memory).
         if GEMINI_KEY and grader is None:
@@ -676,7 +688,7 @@ def _run_houses(job_id: str, houses: list[dict], area: str,
             _cache_put(cache[0], cache[1], payload)
             _record_seen(user_id, cache[0], houses)
         _set_job(job_id, status="done", leads=leads, area=area,
-                 msg=f"Done — {len(leads)} roofs graded.")
+                 msg=f"Done — {len(leads)} damaged roofs found.")
     except Exception as e:
         _fail_job(job_id, f"Scan failed: {e}. Your scan was refunded.")
 

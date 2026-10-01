@@ -66,6 +66,26 @@ _OVERPASS = ("https://overpass-api.de/api/interpreter",
              "https://overpass.kumi.systems/api/interpreter")
 
 
+_VACANT_TAGS = ("abandoned", "vacant", "ruins", "disused", "demolished")
+_VACANT_BUILDING_VALUES = ("vacant", "abandoned", "ruins", "demolished",
+                            "disused")
+
+
+def _vacant_flag(tags: dict) -> bool:
+    """True when OSM tags mark the building vacant/abandoned/condemned.
+
+    Public map records — spotty coverage, but a free first-pass filter so a
+    condemned building never wastes a deep scan or a lead slot.
+    """
+    for k, v in tags.items():
+        kl, vl = str(k).lower(), str(v).lower()
+        if kl in _VACANT_TAGS and vl not in ("no", "false", "0"):
+            return True
+        if kl == "building" and vl in _VACANT_BUILDING_VALUES:
+            return True
+    return False
+
+
 def _overpass_buildings(zipcode: str, lat0: float, lng0: float, limit: int = 120):
     """All building footprints in the area (roof-first, not address-first).
 
@@ -106,7 +126,8 @@ def _overpass_buildings(zipcode: str, lat0: float, lng0: float, limit: int = 120
                     num, street = t.get("addr:housenumber"), t.get("addr:street")
                     out.append({"address": f"{num} {street}" if num and street else "",
                                 "lat": float(c["lat"]), "lng": float(c["lon"]),
-                                "building": t.get("building", "")})
+                                "building": t.get("building", ""),
+                                "vacant": _vacant_flag(t)})
                 if out:
                     return out
             except Exception:
@@ -290,6 +311,7 @@ def _shape_houses(buildings: list[dict], ctx: dict, city: str,
             "lat": b["lat"],
             "lng": b["lng"],
             "building": b.get("building", ""),
+            "vacant": b.get("vacant", False),
         })
     return houses
 
@@ -540,6 +562,8 @@ GRADE_PROMPT = """You are a senior forensic roof inspector grading residential r
 1 FAILING — needs replacement now: sagging or uneven roof deck, blue tarps, large bare or patched areas, collapsed sections, structural deformation.
 0 UNVERIFIABLE — the target roof cannot be assessed (heavy tree cover, deep shadow, mostly out of frame, too coarse). Never guess; use 0.
 
+ABANDONED / DERELICT RULE: if the target property is clearly abandoned or derelict — collapsed or fire-gutted structure, boarded-up and decaying, or a vacant lot with no building at the target point — set "abandoned": true and grade 0. Do not mark a merely old or worn-but-occupied home as abandoned.
+
 CRITICAL DISCRIMINATION RULES:
 1. Solar panels: do NOT count solar arrays or mounting brackets as damage or discoloration. Grade only the exposed roof surface.
 2. Shadows: differentiate sharp tree-limb shadows from sagging or missing shingles. Check whether the dark shape matches a tree next to the house.
@@ -547,7 +571,7 @@ CRITICAL DISCRIMINATION RULES:
 
 For each image also report: primary_material (asphalt shingle, metal, clay/concrete tile, slate, or membrane/flat), pitch_estimate (Flat, Low-slope, Medium, or Steep), obstruction_notes (tree cover, solar panels, shadows, glare — or empty if the view is clear), and damage_boxes — bounding boxes as [ymin, xmin, ymax, xmax] in 0-1000 normalized coordinates around each visible damage area (missing shingles, tarps, ponding, etc.), with a short label per box. For grades 1-2 include at least one damage_box around the worst-affected area. Omit damage_boxes for healthy roofs.
 
-The images are in order. Return a JSON array with exactly one object per image, in order: {"grade": 0-5, "confidence": "low|medium|high", "evidence": ["up to 3 short visual observations"], "primary_material": "...", "pitch_estimate": "...", "obstruction_notes": "...", "damage_boxes": [{"box_2d": [ymin,xmin,ymax,xmax], "label": "..."}]}. Return ONLY the JSON array."""
+The images are in order. Return a JSON array with exactly one object per image, in order: {"grade": 0-5, "abandoned": true/false, "confidence": "low|medium|high", "evidence": ["up to 3 short visual observations"], "primary_material": "...", "pitch_estimate": "...", "obstruction_notes": "...", "damage_boxes": [{"box_2d": [ymin,xmin,ymax,xmax], "label": "..."}]}. Return ONLY the JSON array."""
 
 _GEMINI_URL = ("https://generativelanguage.googleapis.com/v1beta/models/"
                "gemini-3.1-flash-lite:generateContent")
@@ -642,6 +666,7 @@ def _parse_grades(txt: str | None, n: int):
                     except (ValueError, TypeError):
                         pass
             out.append({"grade": grade,
+                        "abandoned": bool(g.get("abandoned", False)),
                         "confidence": str(g.get("confidence", "low"))[:10],
                         "evidence": [str(e)[:160] for e in ev[:3]],
                         "material": str(g.get("primary_material", ""))[:80],
@@ -888,7 +913,7 @@ def grade_roofs(api_key: str, houses: list[dict], progress=None,
         if g:
             h.update(g)
         else:
-            h.update({"grade": 0, "confidence": "low",
+            h.update({"grade": 0, "abandoned": False, "confidence": "low",
                       "evidence": ["grading unavailable"],
                       "material": "", "pitch": "", "obstruction": "",
                       "damage_boxes": []})
@@ -930,19 +955,23 @@ def _stride_fallback(cands: list[dict], count: int) -> list[dict]:
 
 def prescreen_damage(api_key: str, cands: list[dict], count: int,
                      progress=None, prescreener=None) -> list[dict]:
-    """Cheap triage: keep the `count` worst-looking roofs out of `cands`.
+    """Cheap triage: micro-scan the wide pool, deep-scan only the damaged.
 
-    Fetches a z=19 crop per candidate, scores condition 0-5 with one tiny
-    Gemini call per 8 roofs, and returns the worst `count` (grade 0 /
-    unverifiable sinks below visible damage so tree cover can't crowd out
-    real leads). Falls back to geographic stride when triage fails.
-    prescreener() is a test hook like grader().
+    Fetches a z=19 crop per candidate and scores damage 1 (pristine) to 5
+    (severe) with one tiny Gemini call per 8 roofs. Returns at most `count`
+    candidates with a damage score >= 3 (visible damage), worst first —
+    pristine/minor (1-2) and unverifiable (0) roofs never earn the expensive
+    deep scan. Buildings flagged vacant/abandoned in the public map records
+    are dropped before triage so they never waste a lead. Falls back to
+    geographic stride when triage fails. prescreener() is a test hook like
+    grader().
     """
+    # Vacant/condemned buildings never become leads — drop them before the
+    # micro scan even looks at them.
+    cands = [c for c in cands if not c.get("vacant")]
     total = len(cands)
     if total == 0 or count <= 0:
         return []
-    if total <= count:
-        return list(cands)
     if progress:
         progress("prescreen", 0, total, f"Pre-screening {total} roofs…")
 
@@ -985,14 +1014,16 @@ def prescreen_damage(api_key: str, cands: list[dict], count: int,
         list(ex.map(triage, batches))
     if not scored:
         return _stride_fallback(cands, count)
-    # worst first; 0 (unverifiable) sinks below visible damage
-    ranked = sorted(scored, key=lambda i: (scored[i] == 0, -scored[i]))
-    picked = [cands[i] for i in ranked[:count]]
+    # Worst first, but only visibly damaged roofs (score >= 3) earn the
+    # deep scan. Pristine/minor (1-2) and unverifiable (0) never do.
+    ranked = sorted(scored, key=lambda i: -scored[i])
+    damaged = [i for i in ranked if scored[i] >= 3]
+    picked = [cands[i] for i in damaged[:count]]
     for c in picked:
         c.pop("image_b64", None)
     if progress:
         progress("prescreen", 1, 1,
-                 f"{len(picked)} roofs flagged for deep-dive")
+                 f"{len(picked)} damaged roofs flagged for deep-dive")
     return picked
 
 

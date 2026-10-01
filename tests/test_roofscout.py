@@ -907,11 +907,42 @@ class TestPrescreen:
     def test_empty_candidates(self):
         assert pipeline.prescreen_damage("k", [], 5) == []
 
-    def test_passthrough_when_pool_small(self):
+    def test_small_pool_still_triaged(self, monkeypatch):
+        # No passthrough: even a small pool gets the micro scan, and only
+        # visibly damaged roofs earn the deep scan.
         cands = self._cands(3)
+        monkeypatch.setattr(pipeline, "roof_image",
+                            lambda lat, lng, z=20: (b"img", z, "esri"))
         out = pipeline.prescreen_damage("k", cands, 5,
                                         prescreener=lambda b: [1] * len(b))
-        assert out == cands  # pool <= count: returned as-is
+        assert out == []  # all pristine -> nothing deep-scanned
+        out = pipeline.prescreen_damage("k", cands, 5,
+                                        prescreener=lambda b: [4] * len(b))
+        assert len(out) == 3  # all damaged -> all deep-scanned
+
+    def test_vacant_buildings_dropped_before_triage(self, monkeypatch):
+        cands = self._cands(4)
+        cands[1]["vacant"] = True
+        cands[3]["vacant"] = True
+        monkeypatch.setattr(pipeline, "roof_image",
+                            lambda lat, lng, z=20: (b"img", z, "esri"))
+        seen = []
+
+        def prescreener(b64s):
+            seen.append(len(b64s))
+            return [5] * len(b64s)
+
+        out = pipeline.prescreen_damage("k", cands, 4, prescreener=prescreener)
+        assert [c["address"] for c in out] == ["0 Main St", "2 Main St"]
+        assert seen == [2]  # vacant pair never even triaged
+
+    def test_vacant_flag_from_osm_tags(self):
+        assert pipeline._vacant_flag({"abandoned": "yes"})
+        assert pipeline._vacant_flag({"building": "vacant"})
+        assert pipeline._vacant_flag({"disused": "yes"})
+        assert not pipeline._vacant_flag({"building": "house"})
+        assert not pipeline._vacant_flag({"abandoned": "no"})
+        assert not pipeline._vacant_flag({})
 
 
 # ---------------- pin-drop picker ----------------
@@ -967,3 +998,72 @@ class TestPinPicker:
 
     def test_place_endpoint_anon_401(self, app_client):
         assert app_client.get("/api/place?q=Cumberland").status_code == 401
+
+
+# ---------------- damaged-only deep scan ----------------
+
+class TestDamagedOnly:
+    def _cands(self, n):
+        return [{"lat": 39.0 + i * 0.002, "lng": -80.0,
+                 "address": f"{i} Main St", "postcode": "12345",
+                 "key": f"{i} Main St|12345"} for i in range(n)]
+
+    def test_pristine_and_unverifiable_never_deep_scanned(self, monkeypatch):
+        cands = self._cands(8)
+        monkeypatch.setattr(pipeline, "roof_image",
+                            lambda lat, lng, z=20: (b"img", z, "esri"))
+        out = pipeline.prescreen_damage(
+            "k", cands, 8,
+            prescreener=lambda b64s: [1, 2, 0, 1, 2, 0, 1, 2][:len(b64s)])
+        assert out == []  # nothing visibly damaged -> no deep scan
+
+    def test_damaged_capped_worst_first(self, monkeypatch):
+        cands = self._cands(8)
+        monkeypatch.setattr(pipeline, "roof_image",
+                            lambda lat, lng, z=20: (b"img", z, "esri"))
+        out = pipeline.prescreen_damage(
+            "k", cands, 3,
+            prescreener=lambda b64s: [5, 3, 4, 2, 5, 1, 0, 3][:len(b64s)])
+        # qualifying: idx0(5), idx4(5), idx2(4), idx1(3), idx7(3) -> top 3
+        assert [c["address"] for c in out] == ["0 Main St", "4 Main St",
+                                              "2 Main St"]
+
+    def _run(self, monkeypatch, grades):
+        houses = self._cands(len(grades))
+        monkeypatch.setattr(pipeline, "roof_image",
+                            lambda lat, lng, z=20: (b"img", z, "esri"))
+        monkeypatch.setattr(pipeline, "attach_addresses",
+                            lambda houses, progress=None: houses)
+        it = iter(grades)
+
+        def grader(imgs):
+            out = []
+            for _ in imgs:
+                g = next(it)
+                grade, abandoned = g if isinstance(g, tuple) else (g, False)
+                out.append({"grade": grade, "abandoned": abandoned,
+                            "confidence": "high", "evidence": [],
+                            "material": "", "pitch": "", "obstruction": "",
+                            "damage_boxes": []})
+            return out
+
+        server._jobs["j1"] = {"status": "running"}
+        server._run_houses("j1", houses, "Testville, WV", grader=grader)
+        return server._jobs["j1"]
+
+    def test_leads_are_damaged_only_worst_first(self, monkeypatch):
+        job = self._run(monkeypatch, [4, 1, 0, 3, 5, 2])
+        assert job["status"] == "done"
+        assert [h["grade"] for h in job["leads"]] == [1, 2, 3]
+        assert "damaged" in job["msg"]
+
+    def test_no_damaged_roofs_clean_done(self, monkeypatch):
+        job = self._run(monkeypatch, [4, 5, 0, 4])
+        assert job["status"] == "done"
+        assert job["leads"] == []
+        assert "no visibly damaged" in job["msg"].lower()
+
+    def test_abandoned_roofs_never_become_leads(self, monkeypatch):
+        job = self._run(monkeypatch, [(1, True), (2, False), (3, True)])
+        assert job["status"] == "done"
+        assert [h["grade"] for h in job["leads"]] == [2]

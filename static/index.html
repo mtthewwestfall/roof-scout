@@ -402,8 +402,9 @@
 
       const head = document.createElement('div');
       head.style.cssText = 'margin-bottom:12px;color:#334155;font-size:14px;';
-      const damaged = leads.filter((l) => l.grade === 1 || l.grade === 2).length;
-      head.innerHTML = `<b>${leads.length}</b> roofs graded${area ? ` in <b>${esc(area)}</b>` : ''} · <b>${damaged}</b> need repair`;
+      head.innerHTML = leads.length
+        ? `<b>${leads.length}</b> damaged roof${leads.length === 1 ? '' : 's'} found${area ? ` in <b>${esc(area)}</b>` : ''} — worst first`
+        : `No visibly damaged roofs found${area ? ` in <b>${esc(area)}</b>` : ''}. Try another ZIP.`;
       sidebar.appendChild(head);
 
       if (!leads.length) {
