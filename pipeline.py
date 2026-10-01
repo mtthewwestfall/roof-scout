@@ -338,17 +338,14 @@ def candidate_roofs(zipcode: str, center, count: int, progress=None,
     pool = _footprint_pool(zipcode, center, MICRO_SCAN_POOL * 2)
     if pool:
         ctx = _area_context(lat0, lng0)
-    vacant_cells = {_cell_of(b["lat"], b["lng"]) for b in pool
-                    if b.get("vacant")}
     pool = [b for b in pool
-            if not b.get("vacant")
-            and _cell_of(b["lat"], b["lng"]) not in exclude_cells]
+            if _cell_of(b["lat"], b["lng"]) not in exclude_cells]
     pool.sort(key=lambda b: (b["lat"] - lat0) ** 2 + (b["lng"] - lng0) ** 2)
     houses = _shape_houses(pool[:MICRO_SCAN_POOL], ctx, city, zipcode)
     want = max(count, MICRO_SCAN_POOL)
     if len(houses) < want:
         have = ({_cell_of(h["lat"], h["lng"]) for h in houses}
-                | exclude_cells | vacant_cells)
+                | exclude_cells)
         grid = _grid_points(zipcode, center, want - len(houses),
                             progress=progress,
                             base=len(houses), total=want, exclude=have)
@@ -1164,17 +1161,20 @@ def prescreen_damage(api_key: str, cands: list[dict], count: int,
     done = [0]
     lock = threading.Lock()
 
+    def score(b64s):
+        vals = prescreener(b64s) if prescreener else _prescreen_call(api_key, b64s)
+        return vals if vals and len(vals) == len(b64s) else None
+
     def triage(batch):
         b64s = [c["image_b64"] for c in batch]
-        if prescreener:
-            vals = prescreener(b64s)
-        else:
-            vals = _prescreen_call(api_key, b64s)
-            if vals is None:  # one retry
-                vals = _prescreen_call(api_key, b64s)
+        vals = score(b64s) or score(b64s)  # one retry
+        if vals is None and len(b64s) > 1:
+            # A miscounted reply can't be aligned to its images; score each
+            # image alone rather than shift scores onto the wrong roofs.
+            vals = [(score([b]) or [None])[0] for b in b64s]
         with lock:
-            if vals:
-                for c, v in zip(batch, vals):
+            for c, v in zip(batch, vals or []):
+                if v is not None:
                     scored[index_of[id(c)]] = v
             done[0] += len(batch)
             if progress:
