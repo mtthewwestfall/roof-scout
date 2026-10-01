@@ -345,10 +345,13 @@ def candidate_roofs(zipcode: str, center, count: int, progress=None,
     want = max(count, MICRO_SCAN_POOL)
     if len(houses) < want:
         have = {_cell_of(h["lat"], h["lng"]) for h in houses} | exclude_cells
-        grid = _grid_points(zipcode, center, want - len(houses),
+        grid = _grid_points(zipcode, center,
+                            want - len(houses) + len(exclude_cells),
                             progress=progress,
                             base=len(houses), total=want)
         for g in grid:
+            if len(houses) >= want:
+                break
             cell = _cell_of(g["lat"], g["lng"])
             if cell in have:
                 continue
@@ -411,6 +414,9 @@ def sample_addresses(zipcode: str, center, count: int, progress=None):
     return sample_roofs(zipcode, center, count, progress)
 
 
+_GRID_MAX_STEPS = 45
+
+
 def _grid_points(zipcode: str, center, count: int, progress=None,
                  base: int = 0, total: int | None = None):
     """Jittered-grid sweep points (fallback). Pure image search: no addresses
@@ -421,19 +427,24 @@ def _grid_points(zipcode: str, center, count: int, progress=None,
     # ~2.2km radius grid; denser near the middle
     radius_km = 2.2
     steps = 9
-    pts = []
-    for i in range(steps):
-        for j in range(steps):
-            dx = (i - (steps - 1) / 2) / ((steps - 1) / 2)
-            dy = (j - (steps - 1) / 2) / ((steps - 1) / 2)
-            if dx * dx + dy * dy > 1.0:
-                continue
-            # jitter so repeat scans vary a little
-            jx = (hash(f"{zipcode}{i}{j}a") % 1000) / 1000 - 0.5
-            jy = (hash(f"{zipcode}{i}{j}b") % 1000) / 1000 - 0.5
-            lat = lat0 + (dy * radius_km + jy * 0.12) / 111.0
-            lng = lng0 + (dx * radius_km + jx * 0.12) / (111.0 * math.cos(math.radians(lat0)))
-            pts.append((lat, lng))
+    while True:
+        pts = []
+        for i in range(steps):
+            for j in range(steps):
+                dx = (i - (steps - 1) / 2) / ((steps - 1) / 2)
+                dy = (j - (steps - 1) / 2) / ((steps - 1) / 2)
+                if dx * dx + dy * dy > 1.0:
+                    continue
+                # jitter so repeat scans vary a little
+                jx = (hash(f"{zipcode}{i}{j}a") % 1000) / 1000 - 0.5
+                jy = (hash(f"{zipcode}{i}{j}b") % 1000) / 1000 - 0.5
+                lat = lat0 + (dy * radius_km + jy * 0.12) / 111.0
+                lng = lng0 + (dx * radius_km + jx * 0.12) / (111.0 * math.cos(math.radians(lat0)))
+                pts.append((lat, lng))
+        # Densify until the circle holds enough points (~100m spacing max).
+        if len(pts) >= count or steps >= _GRID_MAX_STEPS:
+            break
+        steps += 2
     # inside-out order: best cells first
     pts.sort(key=lambda p: (p[0] - lat0) ** 2 + (p[1] - lng0) ** 2)
 
@@ -1166,6 +1177,8 @@ def prescreen_damage(api_key: str, cands: list[dict], count: int,
         list(ex.map(triage, batches))
     if not scored:
         return _stride_fallback(cands, count)
+    for i, v in scored.items():
+        cands[i]["micro_score"] = v
     # Worst first, but only visibly damaged roofs (score >= 3) earn the
     # deep scan. Pristine/minor (1-2) and unverifiable (0) never do.
     ranked = sorted(scored, key=lambda i: -scored[i])

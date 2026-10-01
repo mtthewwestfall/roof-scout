@@ -858,6 +858,62 @@ class TestRotation:
         pipeline.candidate_roofs("12345", (39.0, -80.0, "X", "City"), 20)
         assert asked["n"] == 200
 
+    def test_grid_densifies_to_requested_count(self):
+        center = (39.0, -80.0, "X", "City")
+        pts = pipeline._grid_points("12345", center, 200)
+        assert len({pipeline._cell_of(p["lat"], p["lng"]) for p in pts}) == 200
+        assert len(pipeline._grid_points("12345", center, 20)) == 20
+
+    def test_no_footprints_still_micro_scans_200(self, monkeypatch):
+        monkeypatch.setattr(pipeline, "_overpass_buildings",
+                            lambda *a, **k: [])
+        monkeypatch.setattr(pipeline, "_area_context", lambda *a: {})
+        out = pipeline.candidate_roofs("12345", (39.0, -80.0, "X", "City"), 20)
+        assert len(out) == 200
+
+    def _scan_env(self, monkeypatch, n):
+        pool = [{"lat": 39.0 + i * 0.001, "lng": -80.0, "address": "",
+                 "building": "house"} for i in range(n)]
+        monkeypatch.setattr(pipeline, "zip_center",
+                            lambda z: (39.0, -80.0, "Testville", "Testville"))
+        monkeypatch.setattr(pipeline, "_overpass_buildings",
+                            lambda *a, **k: pool)
+        monkeypatch.setattr(pipeline, "_area_context", lambda *a: {})
+        monkeypatch.setattr(pipeline, "_grid_points", lambda *a, **k: [])
+        monkeypatch.setattr(pipeline, "roof_image",
+                            lambda lat, lng, z=20: (b"img", z, "esri"))
+        monkeypatch.setattr(pipeline, "attach_addresses",
+                            lambda houses, progress=None: houses)
+
+    def test_zero_lead_scan_moves_outward(self, db, monkeypatch):
+        self._scan_env(monkeypatch, 300)
+        server._jobs["j1"] = {"status": "running"}
+        server._run_scan("j1", "12345", 20, user_id="u1",
+                         prescreener=lambda b: [1] * len(b))
+        assert server._jobs["j1"]["status"] == "error"
+        assert "200 roofs checked" in server._jobs["j1"]["error"]
+        assert len(server._seen_cells("u1", "12345")) == 200
+        server._jobs["j2"] = {"status": "running"}
+        server._run_scan("j2", "12345", 20, user_id="u1",
+                         prescreener=lambda b: [1] * len(b))
+        assert "100 roofs checked" in server._jobs["j2"]["error"]
+        assert len(server._seen_cells("u1", "12345")) == 300
+
+    def test_lead_scan_records_every_triaged_roof(self, db, monkeypatch):
+        self._scan_env(monkeypatch, 250)
+
+        def grader(imgs):
+            return [{"grade": 2, "abandoned": False, "confidence": "high",
+                     "evidence": [], "material": "", "pitch": "",
+                     "obstruction": "", "damage_boxes": []} for _ in imgs]
+
+        server._jobs["j1"] = {"status": "running"}
+        server._run_scan("j1", "12345", 5, user_id="u1", grader=grader,
+                         prescreener=lambda b: [3] * len(b))
+        assert server._jobs["j1"]["status"] == "done"
+        assert len(server._jobs["j1"]["leads"]) == 5
+        assert len(server._seen_cells("u1", "12345")) == 200
+
     def test_cached_scan_not_served_after_seen(self, app_client, monkeypatch):
         # A cached ZIP is NOT served to a customer who already saw those
         # roofs; they get a fresh scan job for new rooftops instead.
