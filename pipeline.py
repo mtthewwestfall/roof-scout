@@ -23,6 +23,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+import zlib
 from concurrent.futures import ThreadPoolExecutor
 
 from PIL import Image, ImageStat
@@ -348,10 +349,9 @@ def candidate_roofs(zipcode: str, center, count: int, progress=None,
     if len(houses) < want:
         have = ({_cell_of(h["lat"], h["lng"]) for h in houses}
                 | exclude_cells | vacant_cells)
-        grid = _grid_points(zipcode, center,
-                            want - len(houses) + len(exclude_cells),
+        grid = _grid_points(zipcode, center, want - len(houses),
                             progress=progress,
-                            base=len(houses), total=want)
+                            base=len(houses), total=want, exclude=have)
         for g in grid:
             if len(houses) >= want:
                 break
@@ -417,44 +417,46 @@ def sample_addresses(zipcode: str, center, count: int, progress=None):
     return sample_roofs(zipcode, center, count, progress)
 
 
-_GRID_MAX_STEPS = 45
+_GRID_SPACING_KM = 0.275  # ~200 points inside the first 2.2km
+_GRID_MAX_KM = 8.8
+
+
+def _jitter(key: str) -> float:
+    return (zlib.crc32(key.encode()) % 1000) / 1000 - 0.5
 
 
 def _grid_points(zipcode: str, center, count: int, progress=None,
-                 base: int = 0, total: int | None = None):
+                 base: int = 0, total: int | None = None, exclude=None):
     """Jittered-grid sweep points (fallback). Pure image search: no addresses
     are resolved here — damaged roofs found on these cells get matched to
-    addresses after grading."""
+    addresses after grading.
+
+    Fixed ~275m spacing, nearest first, out to _GRID_MAX_KM. Cells in
+    `exclude` (already checked) are skipped, so each repeat scan widens the
+    sweep past the roofs it already covered. Jitter is deterministic so the
+    same ZIP yields the same points across restarts."""
+    exclude = exclude or set()
     lat0, lng0 = center[0], center[1]
     total = total or count
-    # ~2.2km radius grid; denser near the middle
-    radius_km = 2.2
-    steps = 9
-    while True:
-        pts = []
-        for i in range(steps):
-            for j in range(steps):
-                dx = (i - (steps - 1) / 2) / ((steps - 1) / 2)
-                dy = (j - (steps - 1) / 2) / ((steps - 1) / 2)
-                if dx * dx + dy * dy > 1.0:
-                    continue
-                # jitter so repeat scans vary a little
-                jx = (hash(f"{zipcode}{i}{j}a") % 1000) / 1000 - 0.5
-                jy = (hash(f"{zipcode}{i}{j}b") % 1000) / 1000 - 0.5
-                lat = lat0 + (dy * radius_km + jy * 0.12) / 111.0
-                lng = lng0 + (dx * radius_km + jx * 0.12) / (111.0 * math.cos(math.radians(lat0)))
-                pts.append((lat, lng))
-        # Densify until the circle holds enough points (~100m spacing max).
-        if len(pts) >= count or steps >= _GRID_MAX_STEPS:
-            break
-        steps += 2
-    # inside-out order: best cells first
-    pts.sort(key=lambda p: (p[0] - lat0) ** 2 + (p[1] - lng0) ** 2)
+    cosla = math.cos(math.radians(lat0))
+    n = int(_GRID_MAX_KM / _GRID_SPACING_KM)
+    pts = []
+    for i in range(-n, n + 1):
+        for j in range(-n, n + 1):
+            dx = i * _GRID_SPACING_KM + _jitter(f"{zipcode}{i}{j}a") * 0.12
+            dy = j * _GRID_SPACING_KM + _jitter(f"{zipcode}{i}{j}b") * 0.12
+            d = math.hypot(dx, dy)
+            if d > _GRID_MAX_KM:
+                continue
+            pts.append((d, lat0 + dy / 111.0, lng0 + dx / (111.0 * cosla)))
+    pts.sort()
 
     found = []
-    for la, ln in pts:
+    for _d, la, ln in pts:
         if len(found) >= count:
             break
+        if _cell_of(la, ln) in exclude:
+            continue
         if progress:
             progress("roofs", base + len(found), total,
                      f"Sweeping imagery grid… {base + len(found)}/{total}")

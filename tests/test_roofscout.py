@@ -3,6 +3,7 @@
 Run: cd /tmp/rsfix && python -m pytest tests/ -q
 """
 import json
+import math
 import os
 import sys
 import time
@@ -875,6 +876,22 @@ class TestRotation:
         pts = pipeline._grid_points("12345", center, 200)
         assert len({pipeline._cell_of(p["lat"], p["lng"]) for p in pts}) == 200
         assert len(pipeline._grid_points("12345", center, 20)) == 20
+
+    def test_grid_widens_past_checked_cells(self):
+        center = (39.0, -80.0, "X", "City")
+
+        def dist(p):
+            return math.hypot(p["lat"] - 39.0,
+                              (p["lng"] + 80.0) * math.cos(math.radians(39.0)))
+
+        first = pipeline._grid_points("12345", center, 200)
+        seen = {pipeline._cell_of(p["lat"], p["lng"]) for p in first}
+        second = pipeline._grid_points("12345", center, 200, exclude=seen)
+        assert len(second) == 200
+        assert not seen & {pipeline._cell_of(p["lat"], p["lng"])
+                           for p in second}
+        assert min(map(dist, second)) >= max(map(dist, first))
+        assert pipeline._grid_points("12345", center, 200) == first
 
     def test_no_footprints_still_micro_scans_200(self, monkeypatch):
         monkeypatch.setattr(pipeline, "_overpass_buildings",
