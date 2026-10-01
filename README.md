@@ -1,4 +1,4 @@
-# RoofScout
+# GetVeridataNow — roof leads, verified from above
 
 Type in a zip code — get back a ranked list of residential roofs that need work.
 
