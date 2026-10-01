@@ -65,9 +65,64 @@
       #printSection, #printSection * { visibility: visible; }
       #printSection { display: block; position: absolute; left: 0; top: 0; width: 100%; }
     }
+    /* ---------- auth ---------- */
+    .auth-overlay { position: fixed; inset: 0; z-index: 2000; display: flex; align-items: center; justify-content: center; padding: 20px;
+      background: radial-gradient(1200px 600px at 20% 10%, #1e3a5f 0%, #0b1526 55%, #060b14 100%); }
+    .auth-card { background: #101b30; border: 1px solid #24344f; border-radius: 14px; width: 100%; max-width: 400px; padding: 32px 28px; box-shadow: 0 24px 70px rgba(0,0,0,.5); }
+    .auth-card h2 { margin: 0 0 4px; font-size: 22px; }
+    .auth-card .sub { color: #8fa0b8; font-size: 13px; margin-bottom: 20px; }
+    .auth-tabs { display: flex; gap: 8px; margin-bottom: 18px; }
+    .auth-tab { flex: 1; padding: 9px; border-radius: 8px; border: 1px solid #24344f; background: #0b1526; color: #cbd5e1; cursor: pointer; font-size: 14px; font-weight: 600; }
+    .auth-tab.active { background: #2563eb; border-color: #2563eb; color: #fff; }
+    .auth-card label { display: block; font-size: 12px; color: #8fa0b8; margin: 12px 0 5px; font-weight: 600; }
+    .auth-card input[type=email], .auth-card input[type=password], .auth-card input[type=text] {
+      width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #24344f; background: #0b1526; color: #e2e8f0; font-size: 14px; box-sizing: border-box; }
+    .acct-pills { display: flex; gap: 8px; }
+    .acct-pill { flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #24344f; background: #0b1526; color: #cbd5e1; cursor: pointer; font-size: 13px; font-weight: 600; text-align: center; }
+    .acct-pill.active { background: #0ea5e9; border-color: #0ea5e9; color: #04121f; }
+    .auth-btn { width: 100%; margin-top: 18px; padding: 12px; border: none; border-radius: 8px; background: #2563eb; color: #fff; font-size: 15px; font-weight: 700; cursor: pointer; }
+    .auth-btn:hover { background: #1d4ed8; }
+    .auth-err { color: #f87171; font-size: 13px; margin-top: 10px; min-height: 18px; }
+    #userChip { display: flex; align-items: center; gap: 10px; font-size: 13px; color: #cbd5e1; }
+    #userChip button { background: #1e293b; color: #cbd5e1; border: 1px solid #334155; border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 12px; }
   </style>
 </head>
 <body>
+
+  <!-- Auth gate -->
+  <div id="authOverlay" class="auth-overlay hidden">
+    <div class="auth-card">
+      <h2>🏠 Roof Scout</h2>
+      <div class="sub">Sign in to scan rooftops and generate repair leads.</div>
+      <div class="auth-tabs">
+        <button class="auth-tab active" id="tabLogin" onclick="authTab('login')">Log in</button>
+        <button class="auth-tab" id="tabSignup" onclick="authTab('signup')">Sign up</button>
+      </div>
+
+      <div id="loginForm">
+        <label>Email</label><input type="email" id="liEmail" placeholder="you@example.com" autocomplete="email">
+        <label>Password</label><input type="password" id="liPass" placeholder="••••••••" autocomplete="current-password">
+        <button class="auth-btn" onclick="doLogin()">Log in</button>
+      </div>
+
+      <div id="signupForm" class="hidden">
+        <label>I am signing up as</label>
+        <div class="acct-pills">
+          <div class="acct-pill active" id="pillInd" onclick="acctType('individual')">👤 Individual</div>
+          <div class="acct-pill" id="pillCo" onclick="acctType('company')">🏢 Company</div>
+        </div>
+        <div id="coNameWrap" class="hidden">
+          <label>Company name</label><input type="text" id="suCompany" placeholder="Apex Roofing LLC">
+        </div>
+        <label>Email</label><input type="email" id="suEmail" placeholder="you@example.com" autocomplete="email">
+        <label>Password <span style="font-weight:400;">(min 8 characters)</span></label>
+        <input type="password" id="suPass" placeholder="••••••••" autocomplete="new-password">
+        <button class="auth-btn" onclick="doSignup()">Create account</button>
+      </div>
+
+      <div class="auth-err" id="authErr"></div>
+    </div>
+  </div>
 
   <header>
     <div style="font-weight: 700; font-size: 18px;">🏠 Roof Scout <span style="font-weight: 400; font-size: 14px; color: #94a3b8;">| Find roofs that need repair</span></div>
@@ -85,6 +140,7 @@
       <button id="searchBtn" onclick="runSearch()">Scan ZIP Code</button>
       <button class="ghost" id="csvBtn" onclick="exportCSV()" title="Download results as CSV">CSV</button>
       <button class="ghost" id="coBtn" onclick="toggleCo()">Company</button>
+      <div id="userChip" class="hidden"><span id="userEmail"></span><button onclick="doLogout()">Log out</button></div>
     </div>
   </header>
   <div id="coPanel" class="hidden">
@@ -186,6 +242,7 @@
           body: JSON.stringify({ q: val, count })
         });
         const data = await res.json();
+        if (data.error === 'login_required') { showAuth(); return; }
         if (!data.ok) throw new Error(data.error || "Search failed");
         if (data.cached) { renderResults(data.payload.leads || [], data.payload.area); }
         else { await pollJob(data.job_id); }
@@ -193,7 +250,6 @@
         sidebar.innerHTML = `<div style="color:#dc2626; padding: 20px;"><b>Error:</b> ${esc(err.message)}</div>`;
       } finally {
         btn.disabled = false;
-        toggleMode();
       }
     }
 
@@ -386,7 +442,78 @@
       a.click();
     }
 
+    /* ---------- auth ---------- */
+    let currentUser = null;
+    let signupType = 'individual';
+
+    function authTab(which) {
+      $('tabLogin').classList.toggle('active', which === 'login');
+      $('tabSignup').classList.toggle('active', which === 'signup');
+      $('loginForm').classList.toggle('hidden', which !== 'login');
+      $('signupForm').classList.toggle('hidden', which !== 'signup');
+      $('authErr').textContent = '';
+    }
+    function acctType(t) {
+      signupType = t;
+      $('pillInd').classList.toggle('active', t === 'individual');
+      $('pillCo').classList.toggle('active', t === 'company');
+      $('coNameWrap').classList.toggle('hidden', t !== 'company');
+    }
+    function showAuth() { $('authOverlay').classList.remove('hidden'); }
+    function hideAuth() { $('authOverlay').classList.add('hidden'); }
+
+    async function checkAuth() {
+      try {
+        const r = await fetch('/api/auth/me');
+        if (!r.ok) { currentUser = null; showAuth(); return false; }
+        const d = await r.json();
+        setUser(d.user);
+        return true;
+      } catch (e) { showAuth(); return false; }
+    }
+    function setUser(u) {
+      currentUser = u;
+      hideAuth();
+      $('userChip').classList.remove('hidden');
+      $('userEmail').textContent = (u.company_name && u.account_type === 'company' ? u.company_name + ' · ' : '') + u.email;
+      try {
+        if (u.account_type === 'company' && u.company_name) {
+          const raw = localStorage.getItem('rs_company');
+          const co = raw ? JSON.parse(raw) : {};
+          if (!co.name) { co.name = u.company_name; localStorage.setItem('rs_company', JSON.stringify(co)); }
+        }
+      } catch (e) {}
+    }
+    async function doLogin() {
+      $('authErr').textContent = '';
+      const r = await fetch('/api/auth/login', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: $('liEmail').value, password: $('liPass').value })
+      });
+      const d = await r.json();
+      if (!d.ok) { $('authErr').textContent = d.error || 'Login failed.'; return; }
+      setUser(d.user);
+    }
+    async function doSignup() {
+      $('authErr').textContent = '';
+      const r = await fetch('/api/auth/signup', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: $('suEmail').value, password: $('suPass').value,
+          account_type: signupType, company_name: $('suCompany').value })
+      });
+      const d = await r.json();
+      if (!d.ok) { $('authErr').textContent = d.error || 'Signup failed.'; return; }
+      setUser(d.user);
+    }
+    async function doLogout() {
+      await fetch('/api/auth/logout', { method: 'POST' });
+      currentUser = null;
+      $('userChip').classList.add('hidden');
+      showAuth();
+    }
+
     toggleMode();
+    checkAuth();
   </script>
 </body>
 </html>

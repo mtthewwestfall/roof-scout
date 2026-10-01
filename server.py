@@ -1,9 +1,11 @@
 """RoofScout server: zip in, ranked roof leads out."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
+import secrets
 import sqlite3
 import threading
 import time
@@ -18,6 +20,8 @@ app = Flask(__name__, static_folder="static", static_url_path="/static")
 DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "roofscout.db"))
 CACHE_TTL = 7 * 24 * 3600
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
+OWNER_EMAIL = "mtthew.westfall@gmail.com"
+SESSION_DAYS = 30
 
 _jobs: dict[str, dict] = {}
 _jobs_lock = threading.Lock()
@@ -28,7 +32,159 @@ def _db():
     conn.execute("""CREATE TABLE IF NOT EXISTS scans (
         zip TEXT NOT NULL, count INTEGER NOT NULL, payload TEXT NOT NULL,
         created_at REAL NOT NULL, PRIMARY KEY (zip, count))""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL,
+        pw_hash TEXT NOT NULL, salt TEXT NOT NULL,
+        account_type TEXT NOT NULL DEFAULT 'individual',
+        company_name TEXT NOT NULL DEFAULT '',
+        is_admin INTEGER NOT NULL DEFAULT 0,
+        created_at REAL NOT NULL)""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS sessions (
+        token TEXT PRIMARY KEY, user_id TEXT NOT NULL,
+        created_at REAL NOT NULL, expires_at REAL NOT NULL)""")
     return conn
+
+
+# ---------------- auth ----------------
+
+def _hash_pw(password: str, salt: str) -> str:
+    return hashlib.pbkdf2_hmac("sha256", password.encode(),
+                               salt.encode(), 210_000).hex()
+
+
+def _set_session_cookie(resp, token: str):
+    secure = request.headers.get("X-Forwarded-Proto", "") == "https" \
+        or request.is_secure
+    resp.set_cookie("rs_session", token, max_age=SESSION_DAYS * 86400,
+                    httponly=True, samesite="Lax", secure=secure, path="/")
+
+
+def _new_session(conn, user_id: str) -> str:
+    token = secrets.token_hex(32)
+    now = time.time()
+    conn.execute("DELETE FROM sessions WHERE expires_at < ?", (now,))
+    conn.execute("INSERT INTO sessions (token, user_id, created_at, expires_at)"
+                 " VALUES (?,?,?,?)",
+                 (token, user_id, now, now + SESSION_DAYS * 86400))
+    conn.commit()
+    return token
+
+
+def _current_user():
+    token = request.cookies.get("rs_session", "")
+    if not token:
+        return None
+    conn = _db()
+    try:
+        row = conn.execute(
+            "SELECT u.id, u.email, u.account_type, u.company_name, u.is_admin"
+            " FROM sessions s JOIN users u ON s.user_id = u.id"
+            " WHERE s.token = ? AND s.expires_at > ?",
+            (token, time.time())).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return None
+    return {"id": row[0], "email": row[1], "account_type": row[2],
+            "company_name": row[3], "is_admin": bool(row[4])}
+
+
+def _require_user():
+    user = _current_user()
+    if not user:
+        return None, (jsonify({"ok": False, "error": "login_required"}), 401)
+    return user, None
+
+
+def _valid_email(email: str) -> bool:
+    return bool(re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email or ""))
+
+
+@app.post("/api/auth/signup")
+def signup():
+    body = request.get_json(force=True, silent=True) or {}
+    email = str(body.get("email", "")).strip().lower()
+    password = str(body.get("password", ""))
+    account_type = str(body.get("account_type", "individual")).strip().lower()
+    company_name = str(body.get("company_name", "")).strip()
+    if not _valid_email(email):
+        return jsonify({"ok": False, "error": "Enter a valid email address."}), 400
+    if len(password) < 8:
+        return jsonify({"ok": False,
+                        "error": "Password must be at least 8 characters."}), 400
+    if account_type not in ("individual", "company"):
+        return jsonify({"ok": False, "error": "Pick individual or company."}), 400
+    if account_type == "company" and not company_name:
+        return jsonify({"ok": False,
+                        "error": "Enter your company name."}), 400
+    user_id = uuid.uuid4().hex
+    salt = secrets.token_hex(16)
+    conn = _db()
+    try:
+        if conn.execute("SELECT 1 FROM users WHERE email=?",
+                        (email,)).fetchone():
+            return jsonify({"ok": False,
+                            "error": "That email already has an account. Try logging in."}), 400
+        is_admin = 1 if email == OWNER_EMAIL else 0
+        conn.execute(
+            "INSERT INTO users (id, email, pw_hash, salt, account_type,"
+            " company_name, is_admin, created_at) VALUES (?,?,?,?,?,?,?,?)",
+            (user_id, email, _hash_pw(password, salt), salt, account_type,
+             company_name, is_admin, time.time()))
+        token = _new_session(conn, user_id)
+    finally:
+        conn.close()
+    resp = jsonify({"ok": True, "user": {"email": email,
+                                        "account_type": account_type,
+                                        "company_name": company_name,
+                                        "is_admin": bool(is_admin)}})
+    _set_session_cookie(resp, token)
+    return resp
+
+
+@app.post("/api/auth/login")
+def login():
+    body = request.get_json(force=True, silent=True) or {}
+    email = str(body.get("email", "")).strip().lower()
+    password = str(body.get("password", ""))
+    conn = _db()
+    try:
+        row = conn.execute(
+            "SELECT id, pw_hash, salt, email, account_type, company_name,"
+            " is_admin FROM users WHERE email=?", (email,)).fetchone()
+        if not row or _hash_pw(password, row[2]) != row[1]:
+            return jsonify({"ok": False,
+                            "error": "Invalid email or password."}), 401
+        token = _new_session(conn, row[0])
+        user = {"email": row[3], "account_type": row[4],
+                "company_name": row[5], "is_admin": bool(row[6])}
+    finally:
+        conn.close()
+    resp = jsonify({"ok": True, "user": user})
+    _set_session_cookie(resp, token)
+    return resp
+
+
+@app.post("/api/auth/logout")
+def logout():
+    token = request.cookies.get("rs_session", "")
+    conn = _db()
+    try:
+        conn.execute("DELETE FROM sessions WHERE token=?", (token,))
+        conn.commit()
+    finally:
+        conn.close()
+    resp = jsonify({"ok": True})
+    resp.delete_cookie("rs_session", path="/")
+    return resp
+
+
+@app.get("/api/auth/me")
+def me():
+    user = _current_user()
+    if not user:
+        return jsonify({"ok": False, "error": "login_required"}), 401
+    return jsonify({"ok": True, "user": user})
 
 
 def _cache_get(zipcode: str, count: int):
@@ -158,6 +314,9 @@ def _run_address_scan(job_id: str, house: dict, grader=None):
 
 @app.post("/api/scan")
 def start_scan():
+    _, err = _require_user()
+    if err:
+        return err
     body = request.get_json(force=True, silent=True) or {}
     raw = str(body.get("q", body.get("zip", ""))).strip()
     try:
@@ -201,6 +360,9 @@ def start_scan():
 
 @app.get("/api/scan/<job_id>")
 def scan_status(job_id: str):
+    _, err = _require_user()
+    if err:
+        return err
     with _jobs_lock:
         job = _jobs.get(job_id)
     if not job:
