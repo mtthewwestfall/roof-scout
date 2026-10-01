@@ -588,11 +588,21 @@ def start_scan():
     if len(raw) < 5:
         return jsonify({"ok": False,
                         "error": "Enter a 5-digit zip or a street address."}), 400
-    house = pipeline.geocode_address(raw)
+    m = re.fullmatch(r"\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*", raw)
+    if m:
+        # Pasted coordinates, e.g. "39.4781,-80.19354".
+        lat, lng = float(m.group(1)), float(m.group(2))
+        if not (-90 <= lat <= 90 and -180 <= lng <= 180):
+            return jsonify({"ok": False,
+                            "error": "Coordinates out of range."}), 400
+        house = pipeline.geocode_latlng(lat, lng)
+    else:
+        house = pipeline.geocode_address(raw)
     if not house:
         return jsonify({"ok": False, "error":
                         f"Couldn't locate “{raw}”. Try a full street address "
-                        "with city and state."}), 400
+                        "with city and state, or paste coordinates like "
+                        "39.4781,-80.19354."}), 400
     blocked = quota_ok()
     if blocked:
         return blocked

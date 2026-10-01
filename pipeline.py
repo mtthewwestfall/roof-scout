@@ -126,33 +126,110 @@ def _area_context(lat: float, lng: float) -> dict:
     }
 
 
+_CENSUS = "https://geocoding.geo.census.gov/geocoder/locations/onelineaddress"
+
+
+def _census_geocode(query: str):
+    """US Census Geocoder fallback for addresses Nominatim doesn't know.
+
+    Free, no key, authoritative for US addresses (OSM misses real streets,
+    e.g. new subdivisions). Returns the same dict shape as geocode_address,
+    or None."""
+    params = {"address": query, "benchmark": "Public_AR_Current",
+              "format": "json"}
+    url = _CENSUS + "?" + urllib.parse.urlencode(params)
+    req = urllib.request.Request(url, headers=_UA)
+    try:
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            data = json.loads(resp.read().decode("utf-8", "replace"))
+    except Exception:
+        return None
+    matches = (data.get("result") or {}).get("addressMatches") or []
+    if not matches:
+        return None
+    m = matches[0]
+    comp = m.get("addressComponents") or {}
+    coords = m.get("coordinates") or {}
+    try:
+        lat, lng = float(coords["y"]), float(coords["x"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    parts = [comp.get("fromAddress") or comp.get("toAddress"),
+             comp.get("preDirection"), comp.get("streetName"),
+             comp.get("suffixType"), comp.get("postDirection")]
+    street = " ".join(p.strip().title() for p in parts if p and p.strip())
+    if not street:
+        street = (m.get("matchedAddress") or "").split(",")[0].strip().title()
+    if not street:
+        return None
+    ctx = _area_context(lat, lng)
+    return {
+        "address": street,
+        "city": (comp.get("city") or "").title() or ctx["city"],
+        "state": comp.get("state") or ctx["state"],
+        "postcode": (comp.get("zip") or "")[:5],
+        "county": ctx["county"],
+        "area": "",
+        "lat": lat,
+        "lng": lng,
+    }
+
+
+def geocode_latlng(lat: float, lng: float):
+    """Build a house dict from pasted coordinates.
+
+    Reverse-geocodes for a display address + city/state/county context;
+    falls back to the raw coordinates as the label when OSM knows nothing
+    nearby."""
+    d = _nominatim("/reverse", {"lat": lat, "lon": lng, "format": "json",
+                                "addressdetails": 1, "zoom": 18})
+    a = (d or {}).get("address", {}) if d else {}
+    house, road = a.get("house_number"), a.get("road")
+    address = (f"{house} {road}" if house and road
+               else f"{lat:.5f},{lng:.5f}")
+    ctx = _area_context(lat, lng)
+    city = (a.get("city") or a.get("town") or a.get("village")
+            or a.get("hamlet") or ctx["city"])
+    return {
+        "address": address,
+        "city": city,
+        "state": a.get("state", "") or ctx["state"],
+        "postcode": (a.get("postcode") or "")[:5],
+        "county": ctx["county"],
+        "area": a.get("suburb") or a.get("neighbourhood") or "",
+        "lat": lat,
+        "lng": lng,
+    }
+
+
 def geocode_address(query: str):
     """Geocode a typed street address -> single address dict, or None.
 
     Requires a house number + street so the aerial view centers on a real
-    rooftop, not a city centroid."""
+    rooftop, not a city centroid. Nominatim first, US Census Geocoder as
+    fallback (OSM misses real streets)."""
     d = _nominatim("/search", {"q": query, "countrycodes": "us",
                                "format": "json", "addressdetails": 1,
                                "limit": 1})
-    if not d:
-        return None
-    r = d[0]
-    a = r.get("address", {})
-    house, road = a.get("house_number"), a.get("road")
-    if not house or not road:
-        return None
-    city = (a.get("city") or a.get("town") or a.get("village")
-            or a.get("hamlet") or "")
-    return {
-        "address": f"{house} {road}",
-        "city": city,
-        "state": a.get("state", ""),
-        "postcode": (a.get("postcode") or "")[:5],
-        "county": (a.get("county") or "").replace(" County", ""),
-        "area": a.get("suburb") or a.get("neighbourhood") or a.get("quarter") or "",
-        "lat": float(r["lat"]),
-        "lng": float(r["lon"]),
-    }
+    if d:
+        r = d[0]
+        a = r.get("address", {})
+        house, road = a.get("house_number"), a.get("road")
+        if house and road:
+            city = (a.get("city") or a.get("town") or a.get("village")
+                    or a.get("hamlet") or "")
+            return {
+                "address": f"{house} {road}",
+                "city": city,
+                "state": a.get("state", ""),
+                "postcode": (a.get("postcode") or "")[:5],
+                "county": (a.get("county") or "").replace(" County", ""),
+                "area": a.get("suburb") or a.get("neighbourhood") or a.get("quarter") or "",
+                "lat": float(r["lat"]),
+                "lng": float(r["lon"]),
+            }
+    # Nominatim missed it — try the Census geocoder before giving up.
+    return _census_geocode(query)
 
 
 def sample_roofs(zipcode: str, center, count: int, progress=None):
