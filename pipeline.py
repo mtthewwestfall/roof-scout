@@ -79,8 +79,12 @@ def _overpass_buildings(zipcode: str, lat0: float, lng0: float, limit: int = 40)
     s, n = lat0 - r, lat0 + r
     w, e = lng0 - r / cosla, lng0 + r / cosla
     queries = [
-        (f'[out:json][timeout:25];area["postal_code"="{zipcode}"]->.a;'
-         f'(way["building"]["addr:housenumber"]["addr:street"](area.a););'
+        # postal_code areas are NOT country-scoped ("21502" is also a German
+        # PLZ), so intersect with the US boundary area.
+        (f'[out:json][timeout:25];area["ISO3166-1"="US"][admin_level=2]->.us;'
+         f'area["postal_code"="{zipcode}"]->.a;'
+         f'(way["building"]["addr:housenumber"]["addr:street"]'
+         f'(area.a)(area.us););'
          f'out center tags {limit};'),
         (f'[out:json][timeout:25];'
          f'(way["building"]["addr:housenumber"]["addr:street"]'
