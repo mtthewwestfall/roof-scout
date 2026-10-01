@@ -55,3 +55,28 @@ body { margin: 0; background: var(--bg); color: var(--txt);
   cursor: pointer; font-size: 13px; }
 footer { text-align: center; padding: 26px 16px 40px; color: var(--dim); font-size: 13px; }
 footer p { margin: 4px 0; }
+
+.brand { display: inline-block; font-weight: 800; letter-spacing: .5px; font-size: 15px;
+  color: var(--accent); border: 1px solid var(--line); background: var(--card);
+  padding: 6px 14px; border-radius: 20px; margin-bottom: 14px; }
+.hero h1 { line-height: 1.15; }
+
+.how, .pitch { max-width: 1060px; margin: 0 auto; padding: 34px 16px 10px; }
+.how h2, .pitch h2 { text-align: center; margin: 0 0 6px; font-size: 26px; }
+.pitch .sub { text-align: center; color: var(--dim); margin: 0 0 20px; }
+.steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; margin-top: 18px; }
+.step { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; }
+.step .n { width: 30px; height: 30px; border-radius: 50%; background: var(--accent);
+  color: #111; font-weight: 800; display: flex; align-items: center; justify-content: center; margin-bottom: 10px; }
+.step h3 { margin: 0 0 6px; font-size: 16px; }
+.step p { margin: 0; color: var(--dim); font-size: 14px; line-height: 1.5; }
+
+.cards6 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+.pcard { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 18px; }
+.pcard .ico { font-size: 26px; margin-bottom: 8px; }
+.pcard h3 { margin: 0 0 6px; font-size: 16px; }
+.pcard p { margin: 0; color: var(--dim); font-size: 14px; line-height: 1.55; }
+.cta-row { text-align: center; margin: 26px 0 10px; }
+.cta { display: inline-block; background: var(--accent); color: #111; font-weight: 800;
+  padding: 14px 28px; border-radius: 12px; text-decoration: none; font-size: 16px; }
+.cta:hover { filter: brightness(1.08); }
