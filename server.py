@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -51,6 +52,9 @@ def _db():
     conn.execute("""CREATE TABLE IF NOT EXISTS sessions (
         token TEXT PRIMARY KEY, user_id TEXT NOT NULL,
         created_at REAL NOT NULL, expires_at REAL NOT NULL)""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS admin_sessions (
+        token TEXT PRIMARY KEY, created_at REAL NOT NULL,
+        expires_at REAL NOT NULL)""")
     conn.execute("""CREATE TABLE IF NOT EXISTS unlocks (
         user_id TEXT NOT NULL, lead_key TEXT NOT NULL,
         unlocked_at REAL NOT NULL,
@@ -667,11 +671,71 @@ def unlock_lead():
     return jsonify({"ok": True, "quota": quota, "lead": lead})
 
 
+def _admin_ok() -> bool:
+    """True if the requester is an admin: logged-in owner account,
+    or holds a valid admin-password session cookie."""
+    token = request.cookies.get("rs_admin", "")
+    if token:
+        conn = _db()
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM admin_sessions WHERE token = ? AND expires_at > ?",
+                (token, time.time())).fetchone()
+            if row:
+                return True
+        finally:
+            conn.close()
+    user = _current_user()
+    return bool(user and user.get("is_admin"))
+
+
+@app.post("/api/admin/login")
+def admin_login():
+    """Admin password gate. The password is the ADMIN_PASSWORD env var —
+    set it to the same admin password used on the other products."""
+    body = request.get_json(silent=True) or {}
+    pw = body.get("password", "")
+    expected = os.environ.get("ADMIN_PASSWORD", "")
+    if expected and pw and hmac.compare_digest(pw, expected):
+        token = secrets.token_urlsafe(32)
+        now = time.time()
+        conn = _db()
+        try:
+            conn.execute(
+                "INSERT INTO admin_sessions (token, created_at, expires_at)"
+                " VALUES (?, ?, ?)", (token, now, now + SESSION_DAYS * 86400))
+            conn.commit()
+        finally:
+            conn.close()
+        resp = jsonify({"ok": True})
+        secure = request.headers.get("X-Forwarded-Proto", "") == "https" \
+            or request.is_secure
+        resp.set_cookie("rs_admin", token, max_age=SESSION_DAYS * 86400,
+                        httponly=True, samesite="Lax", secure=secure, path="/")
+        return resp
+    time.sleep(0.5)
+    return jsonify({"ok": False, "error": "bad_password"}), 401
+
+
+@app.post("/api/admin/logout")
+def admin_logout():
+    token = request.cookies.get("rs_admin", "")
+    if token:
+        conn = _db()
+        try:
+            conn.execute("DELETE FROM admin_sessions WHERE token = ?", (token,))
+            conn.commit()
+        finally:
+            conn.close()
+    resp = jsonify({"ok": True})
+    resp.delete_cookie("rs_admin", path="/")
+    return resp
+
+
 @app.get("/api/admin/users")
 def admin_users():
     """Owner-only: list all accounts with plan + quota usage."""
-    user, err = _require_user()
-    if err or not user.get("is_admin"):
+    if not _admin_ok():
         return jsonify({"ok": False, "error": "admin_required"}), 403
     conn = _db()
     try:
@@ -694,10 +758,8 @@ def admin_users():
 @app.get("/admin")
 def admin_page():
     """Owner-only: account management page."""
-    user, err = _require_user()
-    if err or not user.get("is_admin"):
-        return "Forbidden", 403
-    return send_from_directory("static", "admin.html")
+    if not _admin_ok():
+        return send_from_directory("static", "admin.html")
 
 
 @app.post("/api/admin/set-plan")
@@ -705,8 +767,7 @@ def admin_set_plan():
     """Owner-only: give an account a (free) month of any plan.
 
     Resets the billing cycle: fresh scan + unlock allowances from now."""
-    user, err = _require_user()
-    if err or not user.get("is_admin"):
+    if not _admin_ok():
         return jsonify({"ok": False, "error": "admin_required"}), 403
     body = request.get_json(force=True, silent=True) or {}
     email = str(body.get("email", "")).strip().lower()
