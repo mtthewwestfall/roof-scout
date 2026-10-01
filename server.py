@@ -61,6 +61,7 @@ def _db():
             "trial_scans_used INTEGER NOT NULL DEFAULT 0",
             "trial_unlocks_used INTEGER NOT NULL DEFAULT 0",
             "cycle_scans_used INTEGER NOT NULL DEFAULT 0",
+            "cycle_unlocks_used INTEGER NOT NULL DEFAULT 0",
             "period_start REAL NOT NULL DEFAULT 0"):
         try:
             conn.execute(f"ALTER TABLE users ADD COLUMN {col}")
@@ -74,18 +75,18 @@ def _db():
 # ---------------- plans & trial quotas ----------------
 
 PLANS = {
-    "trial":   {"name": "Trial",   "scans": 1, "unlocks": 5, "cycle_days": 0},
-    "starter": {"name": "Starter", "scans": 2, "unlocks": -1, "cycle_days": 30},
-    "pro":     {"name": "Pro",     "scans": 8, "unlocks": -1, "cycle_days": 30},
+    "trial":   {"name": "Trial",   "scans": 1, "unlocks": 5,   "cycle_days": 0},
+    "starter": {"name": "Starter", "scans": 2, "unlocks": 25,  "cycle_days": 30},
+    "pro":     {"name": "Pro",     "scans": 8, "unlocks": 100, "cycle_days": 30},
 }
-TRIAL_UNLOCKS = 5
 
 
 def _quota(conn, user_id: str, is_admin: bool = False) -> dict:
     """Current plan usage. Admins are unlimited."""
     row = conn.execute(
         "SELECT plan, trial_scans_used, trial_unlocks_used,"
-        " cycle_scans_used, period_start FROM users WHERE id=?",
+        " cycle_scans_used, period_start, cycle_unlocks_used"
+        " FROM users WHERE id=?",
         (user_id,)).fetchone()
     plan = (row[0] if row else "trial") or "trial"
     if plan not in PLANS:
@@ -95,24 +96,31 @@ def _quota(conn, user_id: str, is_admin: bool = False) -> dict:
     if is_admin:
         return {"plan": plan, "plan_name": "Admin",
                 "scans_left": -1, "unlocks_left": -1,
-                "scans_used": 0, "unlocks_used": 0}
+                "scans_used": 0, "unlocks_used": 0,
+                "scans_cap": -1, "unlocks_cap": -1, "cycle_ends": 0}
     if spec["cycle_days"]:
         period_start = row[4] or 0
         if now - period_start > spec["cycle_days"] * 86400:
-            conn.execute("UPDATE users SET cycle_scans_used=0, period_start=?"
+            conn.execute("UPDATE users SET cycle_scans_used=0,"
+                         " cycle_unlocks_used=0, period_start=?"
                          " WHERE id=?", (now, user_id))
             conn.commit()
-            scans_used = 0
+            scans_used, unlocks_used, period_start = 0, 0, now
         else:
             scans_used = row[3] or 0
+            unlocks_used = row[5] or 0
         return {"plan": plan, "plan_name": spec["name"],
                 "scans_left": max(0, spec["scans"] - scans_used),
-                "unlocks_left": -1,
-                "scans_used": scans_used, "unlocks_used": 0}
+                "unlocks_left": max(0, spec["unlocks"] - unlocks_used),
+                "scans_used": scans_used, "unlocks_used": unlocks_used,
+                "scans_cap": spec["scans"], "unlocks_cap": spec["unlocks"],
+                "cycle_ends": period_start + spec["cycle_days"] * 86400}
     return {"plan": plan, "plan_name": spec["name"],
             "scans_left": max(0, spec["scans"] - (row[1] or 0)),
             "unlocks_left": max(0, spec["unlocks"] - (row[2] or 0)),
-            "scans_used": row[1] or 0, "unlocks_used": row[2] or 0}
+            "scans_used": row[1] or 0, "unlocks_used": row[2] or 0,
+            "scans_cap": spec["scans"], "unlocks_cap": spec["unlocks"],
+            "cycle_ends": 0}
 
 
 def _consume_scan(conn, user_id: str, is_admin: bool):
@@ -130,6 +138,25 @@ def _consume_scan(conn, user_id: str, is_admin: bool):
                      " WHERE id=?", (user_id,))
     else:
         conn.execute("UPDATE users SET trial_scans_used=trial_scans_used+1"
+                     " WHERE id=?", (user_id,))
+    conn.commit()
+
+
+def _consume_unlock(conn, user_id: str, is_admin: bool):
+    row = conn.execute("SELECT plan FROM users WHERE id=?",
+                       (user_id,)).fetchone()
+    plan = (row[0] if row else "trial") or "trial"
+    if is_admin:
+        return
+    if plan in PLANS and PLANS[plan]["cycle_days"]:
+        if not conn.execute("SELECT period_start FROM users WHERE id=?",
+                            (user_id,)).fetchone()[0]:
+            conn.execute("UPDATE users SET period_start=? WHERE id=?",
+                         (time.time(), user_id))
+        conn.execute("UPDATE users SET cycle_unlocks_used=cycle_unlocks_used+1"
+                     " WHERE id=?", (user_id,))
+    else:
+        conn.execute("UPDATE users SET trial_unlocks_used=trial_unlocks_used+1"
                      " WHERE id=?", (user_id,))
     conn.commit()
 
@@ -164,12 +191,8 @@ def _unlocked_keys(conn, user_id: str) -> set:
 
 def _shape_leads(conn, leads: list[dict], user: dict,
                  single: bool = False) -> list[dict]:
-    """Apply trial gating: mask addresses + jitter pins until unlocked."""
+    """Mask addresses + jitter pins until a lead is unlocked (all plans)."""
     if user.get("is_admin") or single:
-        return [{**l, "lead_key": _lead_key(l), "locked": False}
-                for l in leads]
-    quota = _quota(conn, user["id"], False)
-    if quota["plan"] != "trial":
         return [{**l, "lead_key": _lead_key(l), "locked": False}
                 for l in leads]
     unlocked = _unlocked_keys(conn, user["id"])
@@ -609,7 +632,7 @@ def scan_status(job_id: str):
 
 @app.post("/api/leads/unlock")
 def unlock_lead():
-    """Trial: spend one unlock to reveal a lead's full address."""
+    """Spend one unlock to reveal a lead's full address (all plans)."""
     user, err = _require_user()
     if err:
         return err
@@ -620,20 +643,21 @@ def unlock_lead():
     conn = _db()
     try:
         quota = _quota(conn, user["id"], user["is_admin"])
-        if quota["plan"] != "trial" or user["is_admin"]:
-            return jsonify({"ok": True, "quota": quota,
-                            "note": "Your plan includes every address."})
+        if user["is_admin"]:
+            return jsonify({"ok": True, "quota": quota})
         if conn.execute("SELECT 1 FROM unlocks WHERE user_id=? AND lead_key=?",
                         (user["id"], lead_key)).fetchone():
             return jsonify({"ok": True, "quota": quota})
         if quota["unlocks_left"] <= 0:
-            return jsonify({"ok": False, "error": "trial_unlocks_exhausted",
+            if quota["plan"] == "trial":
+                return jsonify({"ok": False,
+                                "error": "trial_unlocks_exhausted",
+                                "quota": quota}), 402
+            return jsonify({"ok": False, "error": "unlocks_exhausted",
                             "quota": quota}), 402
         conn.execute("INSERT INTO unlocks (user_id, lead_key, unlocked_at)"
                      " VALUES (?,?,?)", (user["id"], lead_key, time.time()))
-        conn.execute("UPDATE users SET trial_unlocks_used=trial_unlocks_used+1"
-                     " WHERE id=?", (user["id"],))
-        conn.commit()
+        _consume_unlock(conn, user["id"], False)
         quota = _quota(conn, user["id"], False)
     finally:
         conn.close()
@@ -662,7 +686,7 @@ def admin_set_plan():
         if not row:
             return jsonify({"ok": False, "error": "No such account."}), 404
         conn.execute("UPDATE users SET plan=?, cycle_scans_used=0,"
-                     " period_start=? WHERE id=?",
+                     " cycle_unlocks_used=0, period_start=? WHERE id=?",
                      (plan, time.time(), row[0]))
         conn.commit()
     finally:
