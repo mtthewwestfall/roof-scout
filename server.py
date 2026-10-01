@@ -110,7 +110,7 @@ DB_PATH = _default_db_path()
 CACHE_TTL = 7 * 24 * 3600
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
 OWNER_EMAIL = "mtthew.westfall@gmail.com"
-ALLOWED_TEST_EMAILS = {"mtthew.westfall@gmail.com", "mtthew.westfall@gmaiI.com", "mtthew.westfall@gmaii.com"}
+ALLOWED_TEST_EMAILS = {OWNER_EMAIL}
 SESSION_DAYS = 30
 
 _jobs: dict[str, dict] = {}
@@ -913,7 +913,7 @@ def admin_logout():
 
 
 def _can_run_tests() -> bool:
-    """Only mtthew.westfall@gmail.com (and typo variant gmaiI.com) can run test suite."""
+    """Only mtthew.westfall@gmail.com can run test suite."""
     user = _current_user()
     if user and user.get("email") in ALLOWED_TEST_EMAILS:
         return True
