@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Roof Scout — Admin</title>
+<style>
+  body { font-family: system-ui, -apple-system, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
+  header { padding: 16px 24px; border-bottom: 1px solid #1e293b; display: flex; justify-content: space-between; align-items: center; }
+  header a { color: #4da3ff; text-decoration: none; }
+  main { padding: 24px; max-width: 1200px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: #94a3b8; font-size: 13px; margin-bottom: 20px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid #1e293b; vertical-align: middle; }
+  th { color: #94a3b8; font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: .04em; }
+  tr:hover td { background: #16213a; }
+  .pill { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+  .pill.trial { background: #fef3c7; color: #92400e; }
+  .pill.starter { background: #dbeafe; color: #1e40af; }
+  .pill.pro { background: #d1fae5; color: #065f46; }
+  .admin-tag { background: #7c3aed; color: #fff; border-radius: 4px; font-size: 10px; padding: 2px 6px; margin-left: 6px; }
+  select { background: #1e293b; color: #e2e8f0; border: 1px solid #334155; border-radius: 6px; padding: 6px 8px; font-size: 13px; }
+  button.grant { background: #059669; color: #fff; border: none; border-radius: 6px; padding: 7px 12px; font-weight: 700; font-size: 13px; cursor: pointer; margin-left: 8px; }
+  button.grant:disabled { opacity: .5; cursor: default; }
+  #msg { margin: 12px 0; font-size: 14px; min-height: 20px; }
+  #msg.ok { color: #34d399; } #msg.err { color: #f87171; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<header>
+  <div><b>🏠 Roof Scout</b> · Admin</div>
+  <a href="/">← Back to app</a>
+</header>
+<main>
+  <h1>Accounts</h1>
+  <div class="sub">Give any account a free month at any tier — the billing cycle restarts with fresh scans and unlocks.</div>
+  <div id="msg"></div>
+  <table id="usersTable" class="hidden">
+    <thead><tr>
+      <th>Account</th><th>Plan</th><th>Scans used</th><th>Unlocks used</th>
+      <th>Cycle ends</th><th>Joined</th><th>Give free month</th>
+    </tr></thead>
+    <tbody id="usersBody"></tbody>
+  </table>
+  <div id="denied" class="hidden">⛔ Not authorized.</div>
+</main>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g,
+    (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const fmtDate = (ts) => ts ? new Date(ts * 1000).toLocaleDateString() : '—';
+
+  function say(msg, ok) {
+    const m = $('msg');
+    m.textContent = msg;
+    m.className = ok ? 'ok' : 'err';
+  }
+
+  async function load() {
+    const r = await fetch('/api/admin/users');
+    const d = await r.json().catch(() => ({}));
+    if (!d.ok) { $('denied').classList.remove('hidden'); return; }
+    $('usersTable').classList.remove('hidden');
+    const tb = $('usersBody');
+    tb.innerHTML = '';
+    for (const u of d.users) {
+      const q = u.quota || {};
+      const tr = document.createElement('tr');
+      const who = esc(u.email) + (u.is_admin ? '<span class="admin-tag">admin</span>' : '')
+        + (u.account_type === 'company' && u.company_name
+            ? `<br><span style="color:#94a3b8;font-size:12px;">${esc(u.company_name)}</span>` : '');
+      tr.innerHTML = `
+        <td>${who}</td>
+        <td><span class="pill ${esc(u.plan)}">${esc(q.plan_name || u.plan)}</span></td>
+        <td>${q.scans_used} / ${q.scans_cap < 0 ? '∞' : q.scans_cap}</td>
+        <td>${q.unlocks_used} / ${q.unlocks_cap < 0 ? '∞' : q.unlocks_cap}</td>
+        <td>${fmtDate(q.cycle_ends)}</td>
+        <td>${fmtDate(u.created_at)}</td>
+        <td>
+          <select data-email="${esc(u.email)}">
+            <option value="trial">Trial</option>
+            <option value="starter" ${u.plan === 'starter' ? 'selected' : ''}>Starter</option>
+            <option value="pro" ${u.plan === 'pro' ? 'selected' : ''}>Pro</option>
+          </select><button class="grant" data-email="${esc(u.email)}">Give free month</button>
+        </td>`;
+      tb.appendChild(tr);
+    }
+    tb.querySelectorAll('button.grant').forEach((b) => {
+      b.addEventListener('click', () => grant(b.dataset.email, b));
+    });
+  }
+
+  async function grant(email, btn) {
+    const sel = document.querySelector(`select[data-email="${CSS.escape(email)}"]`);
+    const plan = sel ? sel.value : 'starter';
+    if (!confirm(`Give ${email} a free month of ${plan}?\n\nTheir cycle restarts now with fresh scans and unlocks.`)) return;
+    btn.disabled = true;
+    try {
+      const r = await fetch('/api/admin/set-plan', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({email, plan})
+      });
+      const d = await r.json();
+      if (!d.ok) throw new Error(d.error || 'Failed');
+      say(`✅ ${email} is now on ${d.plan} — free month started.`, true);
+      await load();
+    } catch (e) {
+      say('❌ ' + e.message, false);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  load();
+</script>
+</body>
+</html>

@@ -667,9 +667,44 @@ def unlock_lead():
     return jsonify({"ok": True, "quota": quota, "lead": lead})
 
 
+@app.get("/api/admin/users")
+def admin_users():
+    """Owner-only: list all accounts with plan + quota usage."""
+    user, err = _require_user()
+    if err or not user.get("is_admin"):
+        return jsonify({"ok": False, "error": "admin_required"}), 403
+    conn = _db()
+    try:
+        rows = conn.execute(
+            "SELECT id, email, account_type, company_name, plan,"
+            " is_admin, created_at FROM users ORDER BY created_at DESC").fetchall()
+        users = []
+        for r in rows:
+            q = _quota(conn, r[0], False)
+            users.append({
+                "email": r[1], "account_type": r[2], "company_name": r[3],
+                "plan": r[4], "is_admin": bool(r[5]),
+                "created_at": r[6], "quota": q,
+            })
+    finally:
+        conn.close()
+    return jsonify({"ok": True, "users": users})
+
+
+@app.get("/admin")
+def admin_page():
+    """Owner-only: account management page."""
+    user, err = _require_user()
+    if err or not user.get("is_admin"):
+        return "Forbidden", 403
+    return send_from_directory("static", "admin.html")
+
+
 @app.post("/api/admin/set-plan")
 def admin_set_plan():
-    """Owner-only: move an account to a paid plan (until Stripe billing lands)."""
+    """Owner-only: give an account a (free) month of any plan.
+
+    Resets the billing cycle: fresh scan + unlock allowances from now."""
     user, err = _require_user()
     if err or not user.get("is_admin"):
         return jsonify({"ok": False, "error": "admin_required"}), 403

@@ -149,7 +149,7 @@
       <button id="searchBtn" onclick="runSearch()">Scan ZIP Code</button>
       <button class="ghost" id="csvBtn" onclick="exportCSV()" title="Download results as CSV">CSV</button>
       <button class="ghost" id="coBtn" onclick="toggleCo()">Company</button>
-      <div id="userChip" class="hidden"><span id="userEmail"></span><button onclick="doLogout()">Log out</button></div>
+      <div id="userChip" class="hidden"><span id="userEmail"></span><a id="adminLink" href="/admin" class="hidden" style="color:#4da3ff;font-size:12px;">Admin</a><button onclick="doLogout()">Log out</button></div>
     </div>
   </header>
   <div id="trialBanner" class="hidden"></div>
@@ -512,6 +512,7 @@
       hideAuth();
       $('userChip').classList.remove('hidden');
       $('userEmail').textContent = (u.company_name && u.account_type === 'company' ? u.company_name + ' · ' : '') + u.email;
+      $('adminLink').classList.toggle('hidden', !u.is_admin);
       setQuota(u.quota);
       try {
         if (u.account_type === 'company' && u.company_name) {
