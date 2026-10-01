@@ -21,6 +21,9 @@ GEMINI_API_KEY=... python server.py
 - `GEMINI_API_KEY` (required) — roof grading
 - `DB_PATH` — SQLite path on the mounted volume (defaults to `/data/roofscout.db` when `/data` exists)
 - `ADMIN_PASSWORD` (optional) — password gate for `/admin`; the owner account can always reach it after logging in
+- `RESEND_API_KEY` (required for signup) — sends the email-verification link via Resend
+- `MAIL_FROM` — sender shown on verification emails, e.g. `Roof Scout <support@lockeddoor.ai>`
+- `PUBLIC_APP_URL` — public base URL used in verification links, e.g. `https://getveridatenow.com`
 
 **Domain**: `getveridatenow.com` is a Railway custom domain on the `roof-scout` service. DNS lives at Porkbun:
 - `ALIAS @ → <railway target>.up.railway.app` (Porkbun has no apex CNAME; use ALIAS)

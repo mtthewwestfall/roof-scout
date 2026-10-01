@@ -20,6 +20,9 @@ import server
 def db(monkeypatch, tmp_path):
     """Fresh temp DB per test; jobs cleared."""
     monkeypatch.setattr(server, "DB_PATH", str(tmp_path / "t.db"))
+    # Email verification is real code, but tests never hit the network:
+    # pretend every confirmation email sends fine.
+    monkeypatch.setattr(server, "_send_email", lambda *a: True)
     server._jobs.clear()
     conn = server._db()
     conn.close()
@@ -34,10 +37,23 @@ def app_client(db):
 
 
 def signup(client, email, password="TestPass99!", account_type="individual",
-           company_name=""):
+           company_name="", verify=True):
     r = client.post("/api/auth/signup", json={
         "email": email, "password": password,
         "account_type": account_type, "company_name": company_name})
+    if verify and r.status_code == 200:
+        # Complete the email-confirmation step the way a user would: pull
+        # the token the server issued and visit the verify link, which
+        # also establishes the session cookie.
+        conn = server._db()
+        try:
+            row = conn.execute(
+                "SELECT token FROM verification_tokens WHERE email=?"
+                " ORDER BY created_at DESC LIMIT 1", (email,)).fetchone()
+        finally:
+            conn.close()
+        if row:
+            client.get(f"/api/auth/verify?token={row[0]}")
     return r
 
 
@@ -920,21 +936,19 @@ class TestPrescreen:
                                         prescreener=lambda b: [4] * len(b))
         assert len(out) == 3  # all damaged -> all deep-scanned
 
-    def test_vacant_buildings_dropped_before_triage(self, monkeypatch):
+    def test_vacant_buildings_keep_flag_through_triage(self, monkeypatch):
+        # Vacant-flagged buildings are NOT dropped: they get triaged like
+        # anything else and carry the flag into the deep scan for review.
         cands = self._cands(4)
         cands[1]["vacant"] = True
         cands[3]["vacant"] = True
         monkeypatch.setattr(pipeline, "roof_image",
                             lambda lat, lng, z=20: (b"img", z, "esri"))
-        seen = []
-
-        def prescreener(b64s):
-            seen.append(len(b64s))
-            return [5] * len(b64s)
-
-        out = pipeline.prescreen_damage("k", cands, 4, prescreener=prescreener)
-        assert [c["address"] for c in out] == ["0 Main St", "2 Main St"]
-        assert seen == [2]  # vacant pair never even triaged
+        out = pipeline.prescreen_damage(
+            "k", cands, 4, prescreener=lambda b64s: [5] * len(b64s))
+        assert [c["address"] for c in out] == ["0 Main St", "1 Main St",
+                                              "2 Main St", "3 Main St"]
+        assert [c["vacant"] for c in out] == [False, True, False, True]
 
     def test_vacant_flag_from_osm_tags(self):
         assert pipeline._vacant_flag({"abandoned": "yes"})
@@ -1028,8 +1042,10 @@ class TestDamagedOnly:
         assert [c["address"] for c in out] == ["0 Main St", "4 Main St",
                                               "2 Main St"]
 
-    def _run(self, monkeypatch, grades):
+    def _run(self, monkeypatch, grades, vacant=()):
         houses = self._cands(len(grades))
+        for i in vacant:
+            houses[i]["vacant"] = True
         monkeypatch.setattr(pipeline, "roof_image",
                             lambda lat, lng, z=20: (b"img", z, "esri"))
         monkeypatch.setattr(pipeline, "attach_addresses",
@@ -1063,10 +1079,39 @@ class TestDamagedOnly:
         assert job["leads"] == []
         assert "no visibly damaged" in job["msg"].lower()
 
-    def test_abandoned_roofs_never_become_leads(self, monkeypatch):
-        job = self._run(monkeypatch, [(1, True), (2, False), (3, True)])
+    def test_abandoned_roofs_flagged_not_dropped(self, monkeypatch):
+        # Abandoned signals become a review flag, never a silent drop: the
+        # customer sees the warning and decides whether to spend an unlock.
+        # Either signal flags — OSM vacant tags OR the grader's abandoned
+        # verdict — so all three are flagged here, worst first.
+        job = self._run(monkeypatch, [(1, True), (2, False), (3, True)],
+                        vacant=(1,))
         assert job["status"] == "done"
-        assert [h["grade"] for h in job["leads"]] == [2]
+        assert [h["grade"] for h in job["leads"]] == [1, 2, 3]
+        flagged = [h for h in job["leads"] if h.get("needs_review")]
+        assert len(flagged) == 3
+        assert "derelict" in job["leads"][0]["review_reason"]
+        assert "vacant/abandoned" in job["leads"][1]["review_reason"]
+        assert "derelict" in job["leads"][2]["review_reason"]
+        assert "3 flagged for review" in job["msg"]
+
+    def test_clean_lead_sorts_before_flagged(self, monkeypatch):
+        # A clean damaged roof outranks flagged ones even when its grade is
+        # milder: never present a possibly-abandoned property as a top lead.
+        job = self._run(monkeypatch, [(2, False), (1, True), (3, False)],
+                        vacant=())
+        assert [h["grade"] for h in job["leads"]] == [2, 3, 1]
+        assert [bool(h.get("needs_review")) for h in job["leads"]] == [
+            False, False, True]
+
+    def test_flagged_sort_after_clean_worst_first(self):
+        houses = [{"grade": 2, "address": "b", "needs_review": True},
+                  {"grade": 1, "address": "a"},
+                  {"grade": 1, "address": "c", "needs_review": True},
+                  {"grade": 3, "address": "d"}]
+        out = pipeline.sort_leads(houses)
+        assert [(h["address"], bool(h.get("needs_review"))) for h in out] == [
+            ("a", False), ("d", False), ("c", True), ("b", True)]
 
 
 # ---------------- street-level imagery fallback ----------------
@@ -1224,3 +1269,448 @@ class TestStreetLevelFallback:
         assert out["leads"][0]["streetview_url"] == "u"
         assert out["leads"][1]["img"] == "data:m"
         assert payload["leads"][0]["img"] == "data:x"
+
+
+# ---------------- abandoned lead review (approve / reject) ----------------
+
+class TestLeadReview:
+    def _key(self, **kw):
+        return server._lead_key(mklead(**kw))
+
+    def _flagged_key(self, address):
+        """Seed a flagged lead into the scan cache; return its lead_key."""
+        lead = mklead(address=address)
+        lead["needs_review"] = True
+        lead["review_reason"] = ("Map records mark this building"
+                                 " vacant/abandoned")
+        seed_cache(leads=[lead])
+        return server._lead_key(lead)
+
+    def _review_row(self, client, email, key):
+        conn = server._db()
+        try:
+            return conn.execute(
+                "SELECT decision FROM lead_reviews WHERE user_id="
+                "(SELECT id FROM users WHERE email=?) AND lead_key=?",
+                (email, key)).fetchone()
+        finally:
+            conn.close()
+
+    def test_approve_consumes_unlock_and_records(self, app_client):
+        signup(app_client, "r1@x.com")
+        key = self._flagged_key("11 Review Ln")
+        r = app_client.post("/api/leads/review",
+                            json={"lead_key": key, "action": "approve"})
+        assert r.status_code == 200
+        assert r.get_json()["lead"]["address"] == "11 Review Ln"
+        assert r.get_json()["lead"]["locked"] is False
+        assert quota_of(app_client)["unlocks_used"] == 1
+        assert quota_of(app_client)["unlocks_left"] == 4  # 5 - 1
+        assert self._review_row(app_client, "r1@x.com", key)[0] == "approve"
+
+    def test_approve_unknown_lead_404_spends_nothing(self, app_client):
+        signup(app_client, "r1b@x.com")
+        key = self._key(address="No Such St")  # never seeded anywhere
+        r = app_client.post("/api/leads/review",
+                            json={"lead_key": key, "action": "approve"})
+        assert r.status_code == 404
+        assert quota_of(app_client)["unlocks_used"] == 0
+        assert self._review_row(app_client, "r1b@x.com", key) is None
+
+    def test_approve_unflagged_lead_400(self, app_client):
+        signup(app_client, "r1c@x.com")
+        lead = mklead(address="12 Clean St")  # real lead, not flagged
+        seed_cache(leads=[lead])
+        key = server._lead_key(lead)
+        r = app_client.post("/api/leads/review",
+                            json={"lead_key": key, "action": "approve"})
+        assert r.status_code == 400
+        assert quota_of(app_client)["unlocks_used"] == 0
+
+    def test_approve_exhausted_402_records_nothing(self, app_client):
+        signup(app_client, "r2@x.com")
+        conn = server._db()
+        try:
+            conn.execute("UPDATE users SET trial_unlocks_used=5 WHERE email=?",
+                         ("r2@x.com",))
+            conn.commit()
+        finally:
+            conn.close()
+        key = self._flagged_key("9 Elm St")
+        r = app_client.post("/api/leads/review",
+                            json={"lead_key": key, "action": "approve"})
+        assert r.status_code == 402
+        assert r.get_json()["error"] == "trial_unlocks_exhausted"
+        # decision rolled back: they can retry after upgrading
+        assert self._review_row(app_client, "r2@x.com", key) is None
+
+    def test_reject_grants_one_replacement(self, app_client):
+        signup(app_client, "r3@x.com")
+        key = self._flagged_key("7 Oak St")
+        r = app_client.post("/api/leads/review",
+                            json={"lead_key": key, "action": "reject"})
+        assert r.status_code == 200
+        assert r.get_json()["replacement"] is True
+        q = quota_of(app_client)
+        assert q["unlocks_left"] == 6  # 5 + 1 replacement
+        assert q["unlocks_used"] == 0  # rejection costs nothing
+        assert self._review_row(app_client, "r3@x.com", key)[0] == "reject"
+
+    def test_reject_unknown_lead_404_grants_nothing(self, app_client):
+        signup(app_client, "r3b@x.com")
+        key = self._key(address="Fabricated Ave")  # never seeded
+        r = app_client.post("/api/leads/review",
+                            json={"lead_key": key, "action": "reject"})
+        assert r.status_code == 404
+        assert quota_of(app_client)["unlocks_left"] == 5  # no bonus farmed
+        assert self._review_row(app_client, "r3b@x.com", key) is None
+
+    def test_reject_unflagged_lead_400_grants_nothing(self, app_client):
+        signup(app_client, "r3c@x.com")
+        lead = mklead(address="13 Clean St")  # real lead, not flagged
+        seed_cache(leads=[lead])
+        key = server._lead_key(lead)
+        r = app_client.post("/api/leads/review",
+                            json={"lead_key": key, "action": "reject"})
+        assert r.status_code == 400
+        assert quota_of(app_client)["unlocks_left"] == 5  # no bonus farmed
+        assert self._review_row(app_client, "r3c@x.com", key) is None
+
+    def test_reject_twice_grants_bonus_once(self, app_client):
+        signup(app_client, "r4@x.com")
+        key = self._flagged_key("8 Oak St")
+        app_client.post("/api/leads/review",
+                        json={"lead_key": key, "action": "reject"})
+        r = app_client.post("/api/leads/review",
+                            json={"lead_key": key, "action": "reject"})
+        assert r.status_code == 200
+        assert r.get_json()["note"] == "already decided"
+        assert quota_of(app_client)["unlocks_left"] == 6  # still just +1
+
+    def test_reject_unlocked_lead_400(self, app_client):
+        signup(app_client, "r5@x.com")
+        key = self._key()
+        app_client.post("/api/leads/unlock", json={"lead_key": key})
+        r = app_client.post("/api/leads/review",
+                            json={"lead_key": key, "action": "reject"})
+        assert r.status_code == 400
+
+    def test_rejected_lead_hidden_from_results(self, app_client, db):
+        signup(app_client, "r6@x.com")
+        lead = mklead(address="5 Pine St")
+        lead["needs_review"] = True
+        seed_cache(leads=[lead, mklead(address="6 Pine St")])
+        key = server._lead_key(lead)
+        app_client.post("/api/leads/review",
+                        json={"lead_key": key, "action": "reject"})
+        conn = server._db()
+        try:
+            user = {"id": conn.execute(
+                "SELECT id FROM users WHERE email=?",
+                ("r6@x.com",)).fetchone()[0], "is_admin": False}
+            shaped = server._shape_leads(conn, [lead, mklead(address="6 Pine St")],
+                                         user)
+        finally:
+            conn.close()
+        # rejected lead gone; survivor still locked (address masked)
+        assert [l["lead_key"] for l in shaped] == [
+            server._lead_key(mklead(address="6 Pine St"))]
+        assert shaped[0]["locked"] is True
+
+    def test_bad_action_400(self, app_client):
+        signup(app_client, "r7@x.com")
+        r = app_client.post("/api/leads/review",
+                            json={"lead_key": "abc", "action": "maybe"})
+        assert r.status_code == 400
+
+    def test_admin_approve_returns_lead_and_commits(self, app_client):
+        signup(app_client, "r8@x.com")
+        conn = server._db()
+        try:
+            conn.execute("UPDATE users SET is_admin=1 WHERE email=?",
+                         ("r8@x.com",))
+            conn.commit()
+        finally:
+            conn.close()
+        key = self._flagged_key("14 Admin Way")
+        r = app_client.post("/api/leads/review",
+                            json={"lead_key": key, "action": "approve"})
+        assert r.status_code == 200
+        body = r.get_json()
+        assert body["lead"]["address"] == "14 Admin Way"
+        assert body["lead"]["locked"] is False
+        # decision persisted (was silently rolled back before the fix)
+        assert self._review_row(app_client, "r8@x.com", key)[0] == "approve"
+        # admin spends nothing
+        assert quota_of(app_client)["unlocks_used"] == 0
+
+    def test_admin_reject_unknown_lead_404(self, app_client):
+        signup(app_client, "r9@x.com")
+        conn = server._db()
+        try:
+            conn.execute("UPDATE users SET is_admin=1 WHERE email=?",
+                         ("r9@x.com",))
+            conn.commit()
+        finally:
+            conn.close()
+        r = app_client.post("/api/leads/review",
+                            json={"lead_key": self._key(address="Ghost Rd"),
+                                  "action": "reject"})
+        assert r.status_code == 404
+
+
+# ---------------- for-sale lookup seam ----------------
+
+class TestForSale:
+    def test_unknown_without_api_key(self, db):
+        conn = server._db()
+        try:
+            assert server._for_sale_status(conn, mklead()) is None
+        finally:
+            conn.close()
+
+    def test_cached_result_used_without_vendor(self, db):
+        conn = server._db()
+        try:
+            lead = mklead(address="11 Sale St")
+            conn.execute("INSERT INTO listing_cache (addr_key, for_sale,"
+                         " checked_at) VALUES (?,?,?)",
+                         (server._addr_key(lead), 1, time.time()))
+            conn.commit()
+            assert server._for_sale_status(conn, lead, live=False) is True
+        finally:
+            conn.close()
+
+    def _fake_vendor(self, monkeypatch, payload=None, fail=False):
+        seen = {}
+        body = json.dumps(payload if payload is not None else []).encode()
+
+        class Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return body
+
+        def fake_urlopen(req, timeout=12):
+            seen["url"] = req.full_url
+            # urllib normalizes header case ("X-Api-Key" -> "X-api-key")
+            seen["key"] = req.headers.get("X-api-key")
+            if fail:
+                raise OSError("boom")
+            return Resp()
+
+        monkeypatch.setattr(server.urllib.request, "urlopen", fake_urlopen)
+        return seen
+
+    def test_vendor_active_means_for_sale(self, monkeypatch):
+        monkeypatch.setenv("LISTINGS_API_KEY", "k123")
+        seen = self._fake_vendor(
+            monkeypatch, [{"status": "Inactive"}, {"status": "Active"}])
+        assert server._listing_vendor_lookup(
+            "1 Main St", "Morgantown", "WV", "26505") is True
+        assert "address=1%20Main%20St" in seen["url"]
+        assert seen["key"] == "k123"
+
+    def test_vendor_no_active_means_not_for_sale(self, monkeypatch):
+        monkeypatch.setenv("LISTINGS_API_KEY", "k123")
+        self._fake_vendor(monkeypatch, [{"status": "Inactive"}])
+        assert server._listing_vendor_lookup(
+            "1 Main St", "Morgantown", "WV", "26505") is False
+
+    def test_vendor_error_means_unknown(self, monkeypatch):
+        monkeypatch.setenv("LISTINGS_API_KEY", "k123")
+        self._fake_vendor(monkeypatch, fail=True)
+        assert server._listing_vendor_lookup(
+            "1 Main St", "Morgantown", "WV", "26505") is None
+
+    def test_unlock_attaches_for_sale_when_known(self, app_client, monkeypatch):
+        signup(app_client, "fs@x.com")
+        lead = mklead(address="12 Sale St")
+        seed_cache(leads=[lead])
+        key = server._lead_key(lead)
+        monkeypatch.setattr(server, "_listing_vendor_lookup",
+                            lambda a, c, s, p: True)
+        r = app_client.post("/api/leads/unlock", json={"lead_key": key})
+        assert r.status_code == 200
+        assert r.get_json()["lead"]["for_sale"] is True
+
+
+# ---------------- email verification (2026-10-01) ----------------
+
+class TestEmailVerification:
+    def _token_for(self, email):
+        conn = server._db()
+        try:
+            row = conn.execute(
+                "SELECT token FROM verification_tokens WHERE email=?"
+                " ORDER BY created_at DESC LIMIT 1", (email,)).fetchone()
+        finally:
+            conn.close()
+        return row[0] if row else None
+
+    def test_signup_sends_confirmation_without_session(self, app_client):
+        r = signup(app_client, "nv1@t.com", verify=False)
+        assert r.status_code == 200
+        assert r.get_json()["verify_sent"] is True
+        # No session until the email is confirmed.
+        assert app_client.get("/api/auth/me").get_json().get("user") is None
+        assert self._token_for("nv1@t.com")
+
+    def test_unverified_signup_cannot_scan(self, app_client):
+        signup(app_client, "nv2@t.com", verify=False)
+        r = app_client.post("/api/scan", json={"zip": "26554"})
+        assert r.status_code == 401  # no session at all until verified
+
+    def test_unverified_signup_cannot_unlock_or_review(self, app_client):
+        signup(app_client, "nv3@t.com", verify=False)
+        r = app_client.post("/api/leads/unlock", json={"lead_key": "x"})
+        assert r.status_code == 401
+        r = app_client.post("/api/leads/review",
+                            json={"lead_key": "x", "action": "approve"})
+        assert r.status_code == 401
+
+    def test_valid_token_verifies_and_logs_in(self, app_client):
+        signup(app_client, "v1@t.com", verify=False)
+        token = self._token_for("v1@t.com")
+        r = app_client.get(f"/api/auth/verify?token={token}")
+        assert r.status_code == 302
+        assert "verified=1" in r.headers["Location"]
+        me = app_client.get("/api/auth/me").get_json()
+        assert me["user"]["email"] == "v1@t.com"
+        # Token is single-use.
+        r2 = app_client.get(f"/api/auth/verify?token={token}")
+        assert "verify=invalid" in r2.headers["Location"]
+
+    def test_invalid_token_rejected(self, app_client):
+        r = app_client.get("/api/auth/verify?token=nope")
+        assert r.status_code == 302
+        assert "verify=invalid" in r.headers["Location"]
+
+    def test_missing_token_rejected(self, app_client):
+        r = app_client.get("/api/auth/verify")
+        assert r.status_code == 302
+        assert "verify=missing" in r.headers["Location"]
+
+    def test_expired_token_rejected(self, app_client):
+        signup(app_client, "v2@t.com", verify=False)
+        token = self._token_for("v2@t.com")
+        conn = server._db()
+        try:
+            conn.execute(
+                "UPDATE verification_tokens SET expires_at=? WHERE token=?",
+                (time.time() - 1, token))
+            conn.commit()
+        finally:
+            conn.close()
+        r = app_client.get(f"/api/auth/verify?token={token}")
+        assert "verify=expired" in r.headers["Location"]
+        assert app_client.get("/api/auth/me").get_json().get("user") is None
+
+    def test_unverified_login_returns_verify_email(self, app_client):
+        signup(app_client, "v3@t.com", verify=False)
+        r = app_client.post("/api/auth/login",
+                            json={"email": "v3@t.com",
+                                  "password": "TestPass99!"})
+        assert r.status_code == 403
+        assert r.get_json()["error"] == "verify_email"
+        # Still no session.
+        assert app_client.get("/api/auth/me").get_json().get("user") is None
+
+    def test_verified_login_works(self, app_client):
+        signup(app_client, "v4@t.com")  # helper auto-verifies
+        c2 = server.app.test_client()  # fresh client, no cookies
+        r = c2.post("/api/auth/login",
+                    json={"email": "v4@t.com", "password": "TestPass99!"})
+        assert r.status_code == 200
+        assert r.get_json()["user"]["email"] == "v4@t.com"
+
+    def test_verified_user_can_scan(self, app_client, monkeypatch):
+        signup(app_client, "v9@t.com")
+        monkeypatch.setattr(server, "_run_scan", lambda *a, **k: "job1")
+        r = app_client.post("/api/scan", json={"zip": "26554"})
+        assert r.status_code == 200
+
+    def test_resend_hides_unknown_addresses(self, app_client):
+        r = app_client.post("/api/auth/resend-verification",
+                            json={"email": "nobody@t.com"})
+        assert r.status_code == 200
+        assert r.get_json()["verify_sent"] is True
+
+    def test_resend_rejects_already_verified(self, app_client):
+        signup(app_client, "v5@t.com")
+        r = app_client.post("/api/auth/resend-verification",
+                            json={"email": "v5@t.com"})
+        assert r.status_code == 400
+
+    def test_resend_issues_new_token_for_unverified(self, app_client):
+        signup(app_client, "v6@t.com", verify=False)
+        t1 = self._token_for("v6@t.com")
+        conn = server._db()
+        try:
+            conn.execute(
+                "UPDATE verification_tokens SET created_at=? WHERE email=?",
+                (time.time() - 120, "v6@t.com"))
+            conn.commit()
+        finally:
+            conn.close()
+        r = app_client.post("/api/auth/resend-verification",
+                            json={"email": "v6@t.com"})
+        assert r.status_code == 200
+        t2 = self._token_for("v6@t.com")
+        assert t2 and t2 != t1
+
+    def test_failed_email_send_grants_nothing(self, app_client, monkeypatch):
+        monkeypatch.setattr(server, "_send_email", lambda *a: False)
+        r = app_client.post("/api/auth/signup", json={
+            "email": "v7@t.com", "password": "TestPass99!",
+            "account_type": "individual", "company_name": ""})
+        assert r.status_code == 502
+        assert app_client.get("/api/auth/me").get_json().get("user") is None
+        # Login retries delivery instead of handing out a session.
+        r = app_client.post("/api/auth/login",
+                            json={"email": "v7@t.com",
+                                  "password": "TestPass99!"})
+        assert r.status_code in (403, 502)
+
+    def test_resend_recovers_failed_signup_email(self, app_client,
+                                                 monkeypatch):
+        monkeypatch.setattr(server, "_send_email", lambda *a: False)
+        r = app_client.post("/api/auth/signup", json={
+            "email": "v8@t.com", "password": "TestPass99!",
+            "account_type": "individual", "company_name": ""})
+        assert r.status_code == 502
+        monkeypatch.setattr(server, "_send_email", lambda *a: True)
+        r = app_client.post("/api/auth/resend-verification",
+                            json={"email": "v8@t.com"})
+        assert r.status_code == 200
+        token = self._token_for("v8@t.com")
+        app_client.get(f"/api/auth/verify?token={token}")
+        me = app_client.get("/api/auth/me").get_json()
+        assert me["user"]["email"] == "v8@t.com"
+
+    def test_grandfathered_account_logs_in_freely(self, app_client):
+        # A pre-verification account: the migration marked email_verified=1.
+        import secrets as _secrets
+        import uuid as _uuid
+        salt = _secrets.token_hex(16)
+        conn = server._db()
+        try:
+            conn.execute(
+                "INSERT INTO users (id, email, pw_hash, salt, account_type,"
+                " company_name, is_admin, created_at, email_verified)"
+                " VALUES (?,?,?,?,?,?,?,?,?)",
+                (_uuid.uuid4().hex, "old@t.com",
+                 server._hash_pw("TestPass99!", salt), salt,
+                 "individual", "", 0, time.time() - 86400 * 30, 1))
+            conn.commit()
+        finally:
+            conn.close()
+        r = app_client.post("/api/auth/login",
+                            json={"email": "old@t.com",
+                                  "password": "TestPass99!"})
+        assert r.status_code == 200
+        assert r.get_json()["user"]["email"] == "old@t.com"

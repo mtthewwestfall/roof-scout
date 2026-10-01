@@ -573,7 +573,8 @@ def _best_mapillary(lat: float, lng: float, images: list[dict],
 
 def _mapillary_image(lat: float, lng: float, radius_m: float = 50.0) -> bytes | None:
     """Street-level Mapillary photo facing the house (free; needs a token)."""
-    token = os.environ.get("MAPILLARY_ACCESS_TOKEN", "")
+    token = (os.environ.get("MAPILLARY_ACCESS_TOKEN", "")
+             or os.environ.get("MAPILLARY_TOKEN", ""))
     if not token:
         return None
     dlat = radius_m / 111000.0
@@ -1108,16 +1109,18 @@ def prescreen_damage(api_key: str, cands: list[dict], count: int,
     candidates with a damage score >= 3 (visible damage), worst first —
     pristine/minor (1-2) and unverifiable (0) roofs never earn the expensive
     deep scan. Buildings flagged vacant/abandoned in the public map records
-    are dropped before triage so they never waste a lead. Falls back to
-    geographic stride when triage fails. prescreener() is a test hook like
-    grader().
+    keep their `vacant` flag through triage so the deep scan can confirm or
+    clear them — they are flagged for review, never silently dropped.
+    Falls back to geographic stride when triage fails. prescreener() is a
+    test hook like grader().
     """
-    # Vacant/condemned buildings never become leads — drop them before the
-    # micro scan even looks at them.
-    cands = [c for c in cands if not c.get("vacant")]
     total = len(cands)
     if total == 0 or count <= 0:
         return []
+    # Every candidate carries the vacant flag (grid top-up points never had
+    # OSM tags to read), so the review flag survives triage uniformly.
+    for c in cands:
+        c.setdefault("vacant", False)
     if progress:
         progress("prescreen", 0, total, f"Pre-screening {total} roofs…")
 
@@ -1200,5 +1203,9 @@ def obscured_verdict(house: dict) -> dict | None:
 
 
 def sort_leads(houses: list[dict]) -> list[dict]:
-    return sorted(houses, key=lambda h: (_GRADE_ORDER.get(h.get("grade", 0), 5),
+    # Worst first; properties flagged possibly-abandoned sort after the
+    # clean leads (worst-first within each group) so a fake lead is never
+    # presented as a good one.
+    return sorted(houses, key=lambda h: (bool(h.get("needs_review")),
+                                         _GRADE_ORDER.get(h.get("grade", 0), 5),
                                          h.get("address", "")))

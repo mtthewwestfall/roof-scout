@@ -10,6 +10,8 @@ import secrets
 import sqlite3
 import threading
 import time
+import urllib.parse
+import urllib.request
 import uuid
 
 from flask import Flask, jsonify, redirect, request, send_from_directory
@@ -153,12 +155,40 @@ def _db():
             "trial_unlocks_used INTEGER NOT NULL DEFAULT 0",
             "cycle_scans_used INTEGER NOT NULL DEFAULT 0",
             "cycle_unlocks_used INTEGER NOT NULL DEFAULT 0",
-            "period_start REAL NOT NULL DEFAULT 0"):
+            "period_start REAL NOT NULL DEFAULT 0",
+            "bonus_unlocks INTEGER NOT NULL DEFAULT 0"):
         try:
             conn.execute(f"ALTER TABLE users ADD COLUMN {col}")
         except sqlite3.OperationalError as e:
             if "duplicate column name" not in str(e).lower():
                 raise
+    # Abandoned-lead review decisions: one row per customer per lead, so a
+    # rejection can grant its replacement unlock exactly once.
+    conn.execute("""CREATE TABLE IF NOT EXISTS lead_reviews (
+        user_id TEXT NOT NULL, lead_key TEXT NOT NULL,
+        decision TEXT NOT NULL, decided_at REAL NOT NULL,
+        PRIMARY KEY (user_id, lead_key))""")
+    # Email verification (added 2026-10-01): signup no longer grants a
+    # session until the address is confirmed, closing the throwaway-email
+    # free-trial loop. Accounts created before this column existed are
+    # grandfathered as verified; the UPDATE only runs on the fresh ALTER.
+    _migration_now = time.time()
+    try:
+        conn.execute("ALTER TABLE users ADD COLUMN"
+                     " email_verified INTEGER NOT NULL DEFAULT 0")
+        conn.execute("UPDATE users SET email_verified=1 WHERE created_at < ?",
+                     (_migration_now,))
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" not in str(e).lower():
+            raise
+    conn.execute("""CREATE TABLE IF NOT EXISTS verification_tokens (
+        token TEXT PRIMARY KEY, user_id TEXT NOT NULL, email TEXT NOT NULL,
+        created_at REAL NOT NULL, expires_at REAL NOT NULL)""")
+    # For-sale lookup cache: one row per address, refreshed after 7 days, so
+    # unlock-time checks stay cheap.
+    conn.execute("""CREATE TABLE IF NOT EXISTS listing_cache (
+        addr_key TEXT PRIMARY KEY, for_sale INTEGER NOT NULL,
+        checked_at REAL NOT NULL)""")
     conn.commit()
     return conn
 
@@ -176,13 +206,15 @@ def _quota(conn, user_id: str, is_admin: bool = False) -> dict:
     """Current plan usage. Admins are unlimited."""
     row = conn.execute(
         "SELECT plan, trial_scans_used, trial_unlocks_used,"
-        " cycle_scans_used, period_start, cycle_unlocks_used"
+        " cycle_scans_used, period_start, cycle_unlocks_used,"
+        " bonus_unlocks"
         " FROM users WHERE id=?",
         (user_id,)).fetchone()
     plan = (row[0] if row else "trial") or "trial"
     if plan not in PLANS:
         plan = "trial"
     spec = PLANS[plan]
+    bonus = row[6] or 0
     now = time.time()
     if is_admin:
         return {"plan": plan, "plan_name": "Admin",
@@ -202,13 +234,13 @@ def _quota(conn, user_id: str, is_admin: bool = False) -> dict:
             unlocks_used = row[5] or 0
         return {"plan": plan, "plan_name": spec["name"],
                 "scans_left": max(0, spec["scans"] - scans_used),
-                "unlocks_left": max(0, spec["unlocks"] - unlocks_used),
+                "unlocks_left": max(0, spec["unlocks"] - unlocks_used + bonus),
                 "scans_used": scans_used, "unlocks_used": unlocks_used,
                 "scans_cap": spec["scans"], "unlocks_cap": spec["unlocks"],
                 "cycle_ends": period_start + spec["cycle_days"] * 86400}
     return {"plan": plan, "plan_name": spec["name"],
             "scans_left": max(0, spec["scans"] - (row[1] or 0)),
-            "unlocks_left": max(0, spec["unlocks"] - (row[2] or 0)),
+            "unlocks_left": max(0, spec["unlocks"] - (row[2] or 0) + bonus),
             "scans_used": row[1] or 0, "unlocks_used": row[2] or 0,
             "scans_cap": spec["scans"], "unlocks_cap": spec["unlocks"],
             "cycle_ends": 0}
@@ -297,6 +329,75 @@ def _lead_key(lead: dict) -> str:
     return hashlib.sha1(base.encode()).hexdigest()[:16]
 
 
+_LISTING_TTL = 7 * 86400  # re-check for-sale status weekly
+
+
+def _addr_key(lead: dict) -> str:
+    norm = re.sub(r"\s+", " ",
+                  f"{lead.get('address', '')} {lead.get('postcode', '')}"
+                  .strip().lower())
+    return hashlib.sha1(norm.encode()).hexdigest()[:16]
+
+
+def _listing_vendor_lookup(address: str, city: str, state: str,
+                           postcode: str) -> bool | None:
+    """Ask the listings vendor whether the address is actively for sale.
+
+    Returns True/False, or None when unknown (no API key configured, no
+    address, vendor error). Vendor: RentCast listings API
+    (GET /v1/listings/sale, X-Api-Key header); only `status == "Active"`
+    counts as for sale — Inactive/delisted never does.
+    """
+    api_key = os.environ.get("LISTINGS_API_KEY", "").strip()
+    if not api_key or not address.strip():
+        return None
+    q = ", ".join(p for p in (address.strip(), city.strip(),
+                              state.strip(), postcode.strip()) if p)
+    url = ("https://api.rentcast.io/v1/listings/sale?address="
+           + urllib.parse.quote(q))
+    req = urllib.request.Request(
+        url, headers={"X-Api-Key": api_key, "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            data = json.load(resp)
+    except Exception:
+        return None
+    if not isinstance(data, list):
+        return None
+    for item in data:
+        if isinstance(item, dict) \
+                and str(item.get("status", "")).lower() == "active":
+            return True
+    return False
+
+
+def _for_sale_status(conn, lead: dict, live: bool = True) -> bool | None:
+    """For-sale status for an unlocked lead: cached 7 days, else vendor.
+
+    live=False reads the cache only (no vendor call) — for render paths
+    like _shape_leads that must never trigger a paid lookup. The live
+    lookup runs once at unlock time.
+    """
+    key = _addr_key(lead)
+    row = conn.execute("SELECT for_sale, checked_at FROM listing_cache"
+                       " WHERE addr_key=?", (key,)).fetchone()
+    now = time.time()
+    if row and now - row[1] < _LISTING_TTL:
+        return bool(row[0])
+    if not live:
+        return None
+    status = _listing_vendor_lookup(str(lead.get("address", "")),
+                                    str(lead.get("city", "")),
+                                    str(lead.get("state", "")),
+                                    str(lead.get("postcode", "")))
+    if status is not None:
+        conn.execute("INSERT OR REPLACE INTO listing_cache"
+                     " (addr_key, for_sale, checked_at) VALUES (?,?,?)",
+                     (key, int(status), now))
+        conn.commit()
+    return status
+
+
 def _mask_address(addr: str) -> str:
     words = []
     for p in (addr or "").split():
@@ -324,11 +425,21 @@ def _shape_leads(conn, leads: list[dict], user: dict,
         return [{**l, "lead_key": _lead_key(l), "locked": False}
                 for l in leads]
     unlocked = _unlocked_keys(conn, user["id"])
+    rejected = {r[0] for r in
+                conn.execute("SELECT lead_key FROM lead_reviews"
+                             " WHERE user_id=? AND decision='reject'",
+                             (user["id"],))}
     out = []
     for l in leads:
         key = _lead_key(l)
+        if key in rejected:
+            continue  # customer already passed on this one
         if key in unlocked:
-            out.append({**l, "lead_key": key, "locked": False})
+            c = {**l, "lead_key": key, "locked": False}
+            fs = _for_sale_status(conn, l, live=False)
+            if fs is not None:
+                c["for_sale"] = fs
+            out.append(c)
             continue
         c = dict(l)
         c["lead_key"] = key
@@ -402,7 +513,8 @@ def _current_user():
     conn = _db()
     try:
         row = conn.execute(
-            "SELECT u.id, u.email, u.account_type, u.company_name, u.is_admin"
+            "SELECT u.id, u.email, u.account_type, u.company_name, u.is_admin,"
+            " u.email_verified"
             " FROM sessions s JOIN users u ON s.user_id = u.id"
             " WHERE s.token = ? AND s.expires_at > ?",
             (token, time.time())).fetchone()
@@ -411,7 +523,8 @@ def _current_user():
     if not row:
         return None
     user = {"id": row[0], "email": row[1], "account_type": row[2],
-            "company_name": row[3], "is_admin": bool(row[4])}
+            "company_name": row[3], "is_admin": bool(row[4]),
+            "email_verified": bool(row[5])}
     conn2 = _db()
     try:
         user["quota"] = _quota(conn2, user["id"], user["is_admin"])
@@ -424,6 +537,18 @@ def _require_user():
     user = _current_user()
     if not user:
         return None, (jsonify({"ok": False, "error": "login_required"}), 401)
+    return user, None
+
+
+def _require_verified():
+    """Logged-in AND email-confirmed. Gates every quota-consuming action
+    (scans, unlocks, review approvals) so unverified throwaway accounts
+    can't burn free trials."""
+    user, err = _require_user()
+    if err:
+        return None, err
+    if not user.get("email_verified") and not user.get("is_admin"):
+        return None, (jsonify({"ok": False, "error": "verify_email"}), 403)
     return user, None
 
 
@@ -446,6 +571,70 @@ def _normalize_company(name: str) -> str:
     while words and words[-1] in _COMPANY_SUFFIXES:
         words.pop()
     return " ".join(words)
+
+
+VERIFY_TOKEN_TTL = 24 * 3600  # verification links live 24 hours
+VERIFY_RESEND_COOLDOWN = 60  # at most one verification email per minute
+
+
+def _send_email(to_email: str, subject: str, html: str) -> bool:
+    """Send one transactional email via Resend. Returns True on success.
+    Pure stdlib (urllib) so tests can patch it; never raises."""
+    api_key = os.environ.get("RESEND_API_KEY", "")
+    mail_from = os.environ.get("MAIL_FROM", "Roof Scout <support@lockeddoor.ai>")
+    if not api_key:
+        print(f"[email] RESEND_API_KEY not set; would send to {to_email}: {subject}",
+              flush=True)
+        return False
+    try:
+        req = urllib.request.Request(
+            "https://api.resend.com/emails",
+            data=json.dumps({"from": mail_from, "to": [to_email],
+                             "subject": subject, "html": html}).encode(),
+            headers={"Authorization": f"Bearer {api_key}",
+                     "Content-Type": "application/json",
+                     "User-Agent": "roof-scout/1.0"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return 200 <= resp.status < 300
+    except Exception as e:
+        print(f"[email] Resend failed for {to_email}: {e}", flush=True)
+        return False
+
+
+def _verification_email_html(verify_url: str) -> str:
+    return f"""<div style="font-family:sans-serif;max-width:560px;margin:0 auto;">
+<p>Welcome to <b>Roof Scout</b> — one quick step and you're in.</p>
+<p><a href="{verify_url}" style="display:inline-block;padding:12px 24px;
+background:#2563eb;color:#fff;border-radius:8px;text-decoration:none;">
+Confirm my email</a></p>
+<p style="color:#666;font-size:13px;">This link expires in 24 hours.
+If you didn't sign up for Roof Scout, just ignore this email.</p></div>"""
+
+
+def _issue_verification_token(conn, user_id: str, email: str) -> str:
+    """Create (or reuse a fresh) verification token and email it. Returns
+    the token, or '' if the email could not be sent."""
+    now = time.time()
+    row = conn.execute(
+        "SELECT token, created_at FROM verification_tokens"
+        " WHERE user_id=? AND expires_at > ? ORDER BY created_at DESC LIMIT 1",
+        (user_id, now)).fetchone()
+    if row and now - row[1] < VERIFY_RESEND_COOLDOWN:
+        return row[0]  # too soon to resend; reuse the live token
+    token = secrets.token_urlsafe(32)
+    conn.execute("DELETE FROM verification_tokens WHERE user_id=?", (user_id,))
+    conn.execute(
+        "INSERT INTO verification_tokens (token, user_id, email, created_at,"
+        " expires_at) VALUES (?,?,?,?,?)",
+        (token, user_id, email, now, now + VERIFY_TOKEN_TTL))
+    conn.commit()
+    base = os.environ.get("PUBLIC_APP_URL",
+                          "https://roof-scout-production.up.railway.app").rstrip("/")
+    verify_url = f"{base}/api/auth/verify?token={token}"
+    if _send_email(email, "Confirm your Roof Scout email",
+                   _verification_email_html(verify_url)):
+        return token
+    return ""
 
 
 @app.post("/api/auth/signup")
@@ -494,17 +683,70 @@ def signup():
             " company_name, is_admin, created_at) VALUES (?,?,?,?,?,?,?,?)",
             (user_id, email, _hash_pw(password, salt), salt, account_type,
              company_name, is_admin, time.time()))
-        token = _new_session(conn, user_id)
-        quota = _quota(conn, user_id, bool(is_admin))
+        # No session until the email is confirmed: this is the trial-abuse
+        # gate. A throwaway address can't consume scans/unlocks.
+        token = _issue_verification_token(conn, user_id, email)
     finally:
         conn.close()
-    resp = jsonify({"ok": True, "user": {"email": email,
-                                        "account_type": account_type,
-                                        "company_name": company_name,
-                                        "is_admin": bool(is_admin),
-                                        "quota": quota}})
-    _set_session_cookie(resp, token)
+    if not token:
+        return jsonify({"ok": False, "error":
+            "We couldn't send the confirmation email. Check the address"
+            " and try again."}), 502
+    return jsonify({"ok": True, "verify_sent": True, "email": email})
+
+
+@app.get("/api/auth/verify")
+def verify_email():
+    token = str(request.args.get("token", ""))
+    if not token:
+        return redirect("/?verify=missing", code=302)
+    conn = _db()
+    try:
+        row = conn.execute(
+            "SELECT user_id, email, expires_at FROM verification_tokens"
+            " WHERE token=?", (token,)).fetchone()
+        if not row:
+            return redirect("/?verify=invalid", code=302)
+        if row[2] < time.time():
+            conn.execute("DELETE FROM verification_tokens WHERE token=?",
+                         (token,))
+            conn.commit()
+            return redirect("/?verify=expired", code=302)
+        user_id = row[0]
+        conn.execute("UPDATE users SET email_verified=1 WHERE id=?",
+                     (user_id,))
+        conn.execute("DELETE FROM verification_tokens WHERE user_id=?",
+                     (user_id,))
+        session_token = _new_session(conn, user_id)
+    finally:
+        conn.close()
+    resp = redirect("/?verified=1", code=302)
+    _set_session_cookie(resp, session_token)
     return resp
+
+
+@app.post("/api/auth/resend-verification")
+def resend_verification():
+    body = request.get_json(force=True, silent=True) or {}
+    email = str(body.get("email", "")).strip().lower()
+    if not _valid_email(email):
+        return jsonify({"ok": False, "error": "Enter a valid email address."}), 400
+    conn = _db()
+    try:
+        row = conn.execute("SELECT id, email_verified FROM users WHERE email=?",
+                           (email,)).fetchone()
+        if not row:
+            # Don't reveal whether the address is registered.
+            return jsonify({"ok": True, "verify_sent": True})
+        if row[1]:
+            return jsonify({"ok": False, "error": "already_verified"}), 400
+        token = _issue_verification_token(conn, row[0], email)
+    finally:
+        conn.close()
+    if not token:
+        return jsonify({"ok": False, "error":
+            "We couldn't send the confirmation email right now."}), 502
+    return jsonify({"ok": True, "verify_sent": True})
 
 
 @app.post("/api/auth/login")
@@ -521,12 +763,21 @@ def login():
     try:
         row = conn.execute(
             "SELECT id, pw_hash, salt, email, account_type, company_name,"
-            " is_admin FROM users WHERE email=?", (email,)).fetchone()
+            " is_admin, email_verified FROM users WHERE email=?", (email,)).fetchone()
         if not row or _hash_pw(password, row[2]) != row[1]:
             _login_failed(ip, email)
             return jsonify({"ok": False,
                             "error": "Invalid email or password."}), 401
         _login_ok(ip, email)
+        if not row[7]:
+            # Password is right but the address isn't confirmed yet:
+            # re-send the link instead of handing out a session.
+            token = _issue_verification_token(conn, row[0], email)
+            if not token:
+                return jsonify({"ok": False, "error":
+                    "We couldn't send the confirmation email right now."}), 502
+            return jsonify({"ok": False, "error": "verify_email",
+                            "email": email}), 403
         token = _new_session(conn, row[0])
         user = {"email": row[3], "account_type": row[4],
                 "company_name": row[5], "is_admin": bool(row[6])}
@@ -667,11 +918,23 @@ def _run_houses(job_id: str, houses: list[dict], area: str,
         pipeline.grade_roofs(GEMINI_KEY, houses, progress, grader=grader)
 
         # Damaged only: the deep dive (pinpoint + addresses) runs solely on
-        # roofs the grader flagged 1-3. Healthy (4-5), ungradable (0), and
-        # abandoned/derelict properties are not leads and never reach the
-        # customer.
-        houses = [h for h in houses
-                  if h.get("grade") in (1, 2, 3) and not h.get("abandoned")]
+        # roofs the grader flagged 1-3. Healthy (4-5) and ungradable (0)
+        # roofs are not leads and never reach the customer.
+        houses = [h for h in houses if h.get("grade") in (1, 2, 3)]
+        # Abandoned / vacant signals become a review flag, not a silent
+        # drop: the customer sees the warning and decides whether the
+        # property is worth an unlock. Never present a fake lead as clean.
+        for h in houses:
+            reasons = []
+            if h.get("vacant"):
+                reasons.append("Map records mark this building "
+                               "vacant/abandoned")
+            if h.get("abandoned"):
+                reasons.append("Aerial imagery suggests a derelict or "
+                               "abandoned structure")
+            if reasons:
+                h["needs_review"] = True
+                h["review_reason"] = "; ".join(reasons)
         if not houses:
             _set_job(job_id, status="done", leads=[], area=area,
                      msg="Done — no visibly damaged roofs found in this area. "
@@ -698,8 +961,11 @@ def _run_houses(job_id: str, houses: list[dict], area: str,
         if cache:
             _cache_put(cache[0], cache[1], _cacheable(payload))
             _record_seen(user_id, cache[0], houses)
-        _set_job(job_id, status="done", leads=leads, area=area,
-                 msg=f"Done — {len(leads)} damaged roofs found.")
+        flagged = sum(1 for h in leads if h.get("needs_review"))
+        msg = f"Done — {len(leads)} damaged roofs found."
+        if flagged:
+            msg += f" {flagged} flagged for review (possibly abandoned)."
+        _set_job(job_id, status="done", leads=leads, area=area, msg=msg)
     except Exception as e:
         _fail_job(job_id, f"Scan failed: {e}. Your scan was refunded.")
 
@@ -765,7 +1031,7 @@ def _run_address_scan(job_id: str, house: dict, grader=None):
 
 @app.post("/api/scan")
 def start_scan():
-    user, err = _require_user()
+    user, err = _require_verified()
     if err:
         return err
     body = request.get_json(force=True, silent=True) or {}
@@ -928,7 +1194,7 @@ def scan_status(job_id: str):
 @app.post("/api/leads/unlock")
 def unlock_lead():
     """Spend one unlock to reveal a lead's full address (all plans)."""
-    user, err = _require_user()
+    user, err = _require_verified()
     if err:
         return err
     body = request.get_json(force=True, silent=True) or {}
@@ -966,6 +1232,107 @@ def unlock_lead():
     lead = _find_lead(lead_key)
     if lead:
         lead = {**lead, "lead_key": lead_key, "locked": False}
+        conn2 = _db()
+        try:
+            fs = _for_sale_status(conn2, lead)
+        finally:
+            conn2.close()
+        if fs is not None:
+            lead["for_sale"] = fs
+    return jsonify({"ok": True, "quota": quota, "lead": lead})
+
+
+@app.post("/api/leads/review")
+def review_lead():
+    """Approve or reject a possibly-abandoned (flagged) lead.
+
+    Approve spends one unlock and reveals the lead, exactly like unlocking.
+    Reject dismisses it and grants one replacement unlock — the customer
+    never pays an unlock for a dead property they didn't want.
+    One decision per customer per lead: repeats change nothing.
+    """
+    user, err = _require_verified()
+    if err:
+        return err
+    body = request.get_json(force=True, silent=True) or {}
+    lead_key = str(body.get("lead_key", "")).strip()
+    action = str(body.get("action", "")).strip().lower()
+    if not lead_key or action not in ("approve", "reject"):
+        return jsonify({"ok": False,
+                        "error": "Need a lead and action=approve|reject."}), 400
+    conn = _db()
+    try:
+        if conn.execute("SELECT 1 FROM lead_reviews WHERE user_id=? AND lead_key=?",
+                        (user["id"], lead_key)).fetchone():
+            quota = _quota(conn, user["id"], user["is_admin"])
+            return jsonify({"ok": True, "quota": quota,
+                            "note": "already decided"})
+        if conn.execute("SELECT 1 FROM unlocks WHERE user_id=? AND lead_key=?",
+                        (user["id"], lead_key)).fetchone():
+            return jsonify({"ok": False,
+                            "error": "Lead already unlocked."}), 400
+        # Only real, flagged leads can be reviewed. Without this, fabricated
+        # keys could farm unlimited replacement unlocks via reject, and
+        # approve could spend an unlock on a lead that doesn't exist.
+        lead = _find_lead(lead_key)
+        if lead is None:
+            return jsonify({"ok": False,
+                            "error": "Unknown lead."}), 404
+        if not lead.get("needs_review"):
+            return jsonify({"ok": False,
+                            "error": "Lead is not flagged for review."}), 400
+        try:
+            conn.execute("INSERT INTO lead_reviews (user_id, lead_key, decision,"
+                         " decided_at) VALUES (?,?,?,?)",
+                         (user["id"], lead_key, action, time.time()))
+        except sqlite3.IntegrityError:
+            # Lost a race with another decision on the same lead: treat as
+            # the already-decided case rather than erroring.
+            conn.rollback()
+            quota = _quota(conn, user["id"], user["is_admin"])
+            return jsonify({"ok": True, "quota": quota,
+                            "note": "already decided"})
+        if action == "reject":
+            if not user["is_admin"]:
+                conn.execute("UPDATE users SET bonus_unlocks=bonus_unlocks+1"
+                             " WHERE id=?", (user["id"],))
+            conn.commit()
+            quota = _quota(conn, user["id"], user["is_admin"])
+            return jsonify({"ok": True, "quota": quota,
+                            "replacement": not user["is_admin"]})
+        # approve: same path as a normal unlock (spends one unlock)
+        quota = _quota(conn, user["id"], user["is_admin"])
+        if user["is_admin"]:
+            conn.commit()
+        else:
+            if quota["unlocks_left"] <= 0:
+                conn.rollback()
+                err_code = ("trial_unlocks_exhausted"
+                            if quota["plan"] == "trial" else "unlocks_exhausted")
+                return jsonify({"ok": False, "error": err_code,
+                                "quota": quota}), 402
+            try:
+                conn.execute("INSERT INTO unlocks (user_id, lead_key,"
+                             " unlocked_at) VALUES (?,?,?)",
+                             (user["id"], lead_key, time.time()))
+            except sqlite3.IntegrityError:
+                pass
+            else:
+                _consume_unlock(conn, user["id"], False)
+            conn.commit()
+            quota = _quota(conn, user["id"], False)
+    finally:
+        conn.close()
+    lead = _find_lead(lead_key)
+    if lead:
+        lead = {**lead, "lead_key": lead_key, "locked": False}
+        conn2 = _db()
+        try:
+            fs = _for_sale_status(conn2, lead)
+        finally:
+            conn2.close()
+        if fs is not None:
+            lead["for_sale"] = fs
     return jsonify({"ok": True, "quota": quota, "lead": lead})
 
 

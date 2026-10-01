@@ -50,7 +50,8 @@
     /* Company settings popover */
     #coPanel { position: absolute; top: 60px; right: 16px; background: #1e293b; border: 1px solid #475569; border-radius: 8px; padding: 14px; z-index: 1000; width: 280px; }
     #coPanel label { display: block; font-size: 12px; color: #94a3b8; margin: 8px 0 2px; }
-    #coPanel input { width: 100%; }
+    #coPanel input, #coPanel select { width: 100%; }
+    #coPanel select { background: #0f172a; color: #e2e8f0; border: 1px solid #475569; }
 
     /* Print mailer preview overlay */
     #printOverlay { position: fixed; inset: 0; background: rgba(15,23,42,.85); z-index: 2000; display: flex; align-items: flex-start; justify-content: center; overflow-y: auto; padding: 24px; }
@@ -142,6 +143,12 @@
       </div>
 
       <div class="auth-err" id="authErr"></div>
+      <div class="auth-ok" id="authOk" style="display:none;color:#059669;font-size:14px;margin-top:10px;"></div>
+      <div id="verifyWrap" style="display:none;margin-top:10px;font-size:14px;">
+        <span id="verifyMsg"></span>
+        <button type="button" id="resendBtn" onclick="doResend()"
+          style="margin-left:8px;padding:6px 12px;border-radius:8px;border:1px solid #cbd5e1;background:#fff;cursor:pointer;">Resend email</button>
+      </div>
     </div>
   </div>
 
@@ -173,6 +180,16 @@
     <label>Company name</label><input id="coName" placeholder="Apex Roofing">
     <label>Your name</label><input id="coRep" placeholder="Jane Smith">
     <label>Phone</label><input id="coPhone" placeholder="(555) 123-4567">
+    <label>Inspection offer (pitched on for-sale homes)</label>
+    <select id="coOfferType" onchange="toggleOfferInputs()" style="width:100%;padding:6px;border-radius:4px;">
+      <option value="free">Free inspection</option>
+      <option value="amount_off">$ off inspection</option>
+      <option value="percent_off">% off inspection</option>
+      <option value="custom">Custom wording</option>
+      <option value="none">No inspection offer</option>
+    </select>
+    <input id="coOfferValue" placeholder="Amount (e.g. 50)" style="margin-top:6px;" class="hidden">
+    <input id="coOfferText" placeholder="Your custom offer wording" style="margin-top:6px;" class="hidden">
     <div style="margin-top:10px; display:flex; gap:8px;">
       <button onclick="saveCompany()">Save</button>
       <button class="ghost" onclick="toggleCo()">Close</button>
@@ -223,8 +240,19 @@
     function company() {
       try {
         const c = JSON.parse(localStorage.getItem('rs_company') || '{}');
-        return { name: c.name || '', rep: c.rep || '', phone: c.phone || '' };
-      } catch { return { name: '', rep: '', phone: '' }; }
+        return {
+          name: c.name || '', rep: c.rep || '', phone: c.phone || '',
+          offerType: c.offerType || 'free', offerValue: c.offerValue || '',
+          offerText: c.offerText || ''
+        };
+      } catch {
+        return { name: '', rep: '', phone: '', offerType: 'free', offerValue: '', offerText: '' };
+      }
+    }
+    function toggleOfferInputs() {
+      const t = $('coOfferType').value;
+      $('coOfferValue').classList.toggle('hidden', t !== 'amount_off' && t !== 'percent_off');
+      $('coOfferText').classList.toggle('hidden', t !== 'custom');
     }
     function toggleCo() {
       const p = $('coPanel');
@@ -232,13 +260,27 @@
       if (!p.classList.contains('hidden')) {
         const c = company();
         $('coName').value = c.name; $('coRep').value = c.rep; $('coPhone').value = c.phone;
+        $('coOfferType').value = c.offerType; $('coOfferValue').value = c.offerValue;
+        $('coOfferText').value = c.offerText; toggleOfferInputs();
       }
     }
     function saveCompany() {
       localStorage.setItem('rs_company', JSON.stringify({
-        name: $('coName').value.trim(), rep: $('coRep').value.trim(), phone: $('coPhone').value.trim()
+        name: $('coName').value.trim(), rep: $('coRep').value.trim(), phone: $('coPhone').value.trim(),
+        offerType: $('coOfferType').value, offerValue: $('coOfferValue').value.trim(),
+        offerText: $('coOfferText').value.trim()
       }));
       toggleCo();
+    }
+
+    /* Inspection offer wording, driven by the Company panel. Null = no offer. */
+    function offerSentence(co) {
+      const t = co.offerType || 'free';
+      if (t === 'none') return null;
+      if (t === 'amount_off' && co.offerValue) return `a professional roof inspection at $${co.offerValue} off`;
+      if (t === 'percent_off' && co.offerValue) return `a professional roof inspection at ${co.offerValue}% off`;
+      if (t === 'custom' && co.offerText) return co.offerText;
+      return 'a free, no-obligation roof inspection';
     }
 
     /* ---------- search modes ---------- */
@@ -276,6 +318,12 @@
         });
         const data = await res.json();
         if (data.error === 'login_required') { showAuth(); return; }
+        if (data.error === 'verify_email') {
+          showVerifyNotice(currentUser ? currentUser.email : '');
+          btn.disabled = false; btn.innerText = 'Scan ZIP Code';
+          sidebar.innerHTML = '';
+          return;
+        }
         if (data.error === 'trial_scans_exhausted' || res.status === 402) {
           if (data.quota) setQuota(data.quota);
           sidebar.innerHTML = `<div class="card" style="border:2px solid #f59e0b;">
@@ -393,7 +441,14 @@
       const verdict = l.grade === 1
         ? 'this roof looks like it is failing and may need replacement before the next big storm.'
         : 'this roof looks worn and likely needs repair soon, before small problems turn expensive.';
-      return `${who}We reviewed recent aerial imagery of the roof at ${loc || 'this property'} and ${verdict} I'd like to offer a free, no-obligation roof inspection — if the roof turns out fine, we'll tell you that too.`;
+      const offer = offerSentence(co);
+      let close = offer
+        ? `I'd like to offer ${offer} — if the roof turns out fine, we'll tell you that too.`
+        : `Call ${co.phone || 'us'} if you'd like us to take a closer look in person.`;
+      if (l.for_sale && offer) {
+        close = `This home is currently listed for sale, so I'm offering ${offer} — a clean bill of health (or a repair quote in hand) helps it sell faster and with fewer surprises at inspection.`;
+      }
+      return `${who}We reviewed recent aerial imagery of the roof at ${loc || 'this property'} and ${verdict} ${close}`;
     }
 
     /* ---------- results ---------- */
@@ -407,8 +462,9 @@
 
       const head = document.createElement('div');
       head.style.cssText = 'margin-bottom:12px;color:#334155;font-size:14px;';
+      const flaggedCount = leads.filter((l) => l.needs_review).length;
       head.innerHTML = leads.length
-        ? `<b>${leads.length}</b> damaged roof${leads.length === 1 ? '' : 's'} found${area ? ` in <b>${esc(area)}</b>` : ''} — worst first`
+        ? `<b>${leads.length}</b> damaged roof${leads.length === 1 ? '' : 's'} found${area ? ` in <b>${esc(area)}</b>` : ''} — worst first${flaggedCount ? ` · <b style="color:#b45309;">${flaggedCount} flagged for review</b>` : ''}`
         : `No visibly damaged roofs found${area ? ` in <b>${esc(area)}</b>` : ''}. Try another ZIP.`;
       sidebar.appendChild(head);
 
@@ -418,8 +474,16 @@
       }
 
       const bounds = [];
+      let flaggedDividerShown = false;
       leads.forEach((lead, idx) => {
         if (lead.lat && lead.lng) bounds.push([lead.lat, lead.lng]);
+        if (lead.needs_review && !flaggedDividerShown) {
+          flaggedDividerShown = true;
+          const div = document.createElement('div');
+          div.style.cssText = 'margin:18px 0 10px;padding:10px 12px;background:#fef3c7;border:1px solid #f59e0b;border-radius:10px;color:#92400e;font-size:13px;';
+          div.innerHTML = `<b>⚠️ Flagged for review</b> — the propert${leads.filter((l) => l.needs_review).length === 1 ? 'y' : 'ies'} below look possibly abandoned. Verify on Street View before mailing — don't spend an unlock on a dead property.`;
+          sidebar.appendChild(div);
+        }
         const hasAddr = !!(lead.address && lead.address.trim());
         const addrLine = hasAddr ? esc(lead.address)
           : `<span class="dim">Street address not in free records — <a href="${esc(lead.maps_url)}" target="_blank">verify on map</a></span>`;
@@ -435,13 +499,23 @@
         card.className = 'card' + (locked ? ' locked-card' : '');
         const mapsBtn = lead.maps_url ? `<a class="btn-link" href="${esc(lead.maps_url)}" target="_blank">Google Maps</a>` : '';
         const svBtn = lead.streetview_url ? `<a class="btn-link" href="${esc(lead.streetview_url)}" target="_blank">Street View</a>` : '';
-        const actionsHtml = locked ? `
+        const forSaleBadge = lead.for_sale
+          ? `<span class="badge" style="background:#dbeafe;color:#1d4ed8;margin-left:6px;">🏷️ For sale</span>` : '';
+        const reviewHtml = `
+            <div class="lock-note">⚠️ <b>Pending review — possibly abandoned.</b><br>
+            Approve to unlock it as a lead, or reject it for a replacement unlock.</div>
+            <div class="card-actions">
+              <button class="btn-unlock" onclick="reviewLead(${idx}, 'approve')">✅ Approve & unlock (${unlocksLeft} left)</button>
+              <button class="btn-edit" onclick="reviewLead(${idx}, 'reject')">❌ Reject (+1 unlock)</button>
+            </div>
+          `;
+        const actionsHtml = locked ? (lead.needs_review ? reviewHtml : `
             <div class="lock-note">🔒 <b>Exact address locked</b> —
             unlock it to reveal the full address, mailer, and map links.</div>
             <div class="card-actions">
               <button class="btn-unlock" data-i="${idx}" onclick="unlockLead(${idx})">🔓 Unlock this lead (${unlocksLeft} left)</button>
             </div>
-          ` : (lead.grade === 1 || lead.grade === 2) ? `
+          `) : (lead.grade === 1 || lead.grade === 2) ? `
             <div class="section-title">Pitch / Outbound Hook:</div>
             <div class="pitch-box">"${hook}"</div>
             <div class="card-actions">
@@ -454,10 +528,11 @@
             <div class="card-actions">${mapsBtn}${svBtn}</div>
           `;
         card.innerHTML = `
+          ${lead.needs_review ? `<div style="margin-bottom:10px;padding:9px 11px;background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;color:#92400e;font-size:12.5px;"><b>⚠️ Possibly abandoned</b> — ${esc(lead.review_reason || 'flagged for review')}. Verify before mailing.</div>` : ''}
           <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
             ${lead.verdict === 'tree-obscured'
               ? `<span class="badge grade-0">🌳 Tree-obscured — can't grade</span>`
-              : `<span class="badge grade-${lead.grade}">Grade ${lead.grade} · ${gradeLabels[lead.grade] || ''}</span>`}
+              : `<span class="badge grade-${lead.grade}">Grade ${lead.grade} · ${gradeLabels[lead.grade] || ''}</span>`}${forSaleBadge}
             <small><b>${esc(lead.material || '')}</b>${lead.pitch ? ` · ${esc(lead.pitch)}` : ''}</small>
           </div>
           <p style="margin: 8px 0 4px; font-weight:700; font-size: 14px;">${addrLine}</p>
@@ -514,6 +589,13 @@
       const repairs = (lead.repair_breakdown || []).map((r) =>
         `<li><b>${esc(r.issue)}</b>${r.fix ? ` — ${esc(r.fix)}` : ''}</li>`).join('');
       const addr = [lead.address, lead.city, lead.state, lead.postcode].filter(Boolean).join(', ');
+      const offer = offerSentence(co);
+      const inspectLine = offer
+        ? `Because small roof problems become expensive interior damage fast, we offer ${offer} to verify these findings in person before the next storm does it for you.`
+        : `Because small roof problems become expensive interior damage fast, we're happy to take a closer look in person — call us to schedule a visit before the next storm.`;
+      const forSaleLine = lead.for_sale && offer
+        ? `<p><strong>For sale?</strong> This property appears to be currently listed for sale. ${esc(offer.charAt(0).toUpperCase() + offer.slice(1))} gives buyers confidence and helps the sale close with fewer inspection surprises.</p>`
+        : '';
 
       $('printSection').innerHTML = `
         <div style="max-width: 650px; margin: 0 auto; font-family: Georgia, serif; line-height: 1.6; color: #111;">
@@ -541,7 +623,9 @@
 
           <p><strong>Next steps:</strong><br>${esc(hook)}</p>
 
-          <p>Because small roof problems become expensive interior damage fast, we offer a free on-site inspection to verify these findings in person before the next storm does it for you.</p>
+          ${forSaleLine}
+
+          <p>${esc(inspectLine)}</p>
 
           <div style="margin-top: 40px; border-top: 1px solid #e2e8f0; padding-top: 15px; font-family: sans-serif; font-size: 13px;">
             <p style="margin:0;"><strong>${esc(co.rep || co.name || 'Roof Scout')}</strong>${co.name && co.rep ? ` · ${esc(co.name)}` : ''}</p>
@@ -667,12 +751,48 @@
           renderResults(currentLeads, lastArea);
           return;
         }
-        if (!d.ok) throw new Error(d.error || 'Unlock failed');
+        if (!d.ok) {
+          if (d.error === 'verify_email') { showVerifyNotice(currentUser ? currentUser.email : ''); renderResults(currentLeads, lastArea); return; }
+          throw new Error(d.error || 'Unlock failed');
+        }
         if (d.quota) setQuota(d.quota);
         if (d.lead) currentLeads[idx] = d.lead;
         renderResults(currentLeads, lastArea);
       } catch (e) {
         alert('Unlock failed: ' + e.message);
+        renderResults(currentLeads, lastArea);
+      }
+    }
+    async function reviewLead(idx, action) {
+      const lead = currentLeads[idx];
+      if (!lead || !lead.lead_key) return;
+      if (action === 'reject' && !confirm('Reject this possibly-abandoned lead? You will get +1 replacement unlock.')) return;
+      try {
+        const r = await fetch('/api/leads/review', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ lead_key: lead.lead_key, action })
+        });
+        const d = await r.json();
+        if (d.error === 'trial_unlocks_exhausted' || d.error === 'unlocks_exhausted' || r.status === 402) {
+          if (d.quota) setQuota(d.quota);
+          alert('No unlocks left — approve needs one unlock. Reject is always free and grants +1.');
+          renderResults(currentLeads, lastArea);
+          return;
+        }
+        if (!d.ok) {
+          if (d.error === 'verify_email') { showVerifyNotice(currentUser ? currentUser.email : ''); renderResults(currentLeads, lastArea); return; }
+          throw new Error(d.error || 'Review failed');
+        }
+        if (d.quota) setQuota(d.quota);
+        if (action === 'approve' && d.lead) {
+          currentLeads[idx] = d.lead;
+        } else if (action === 'reject') {
+          currentLeads.splice(idx, 1);
+          if (d.replacement) alert('Rejected — +1 replacement unlock added.');
+        }
+        renderResults(currentLeads, lastArea);
+      } catch (e) {
+        alert('Review failed: ' + e.message);
         renderResults(currentLeads, lastArea);
       }
     }
@@ -690,7 +810,10 @@
         body: JSON.stringify({ email: $('liEmail').value, password: $('liPass').value })
       });
       const d = await r.json();
-      if (!d.ok) { $('authErr').textContent = d.error || 'Login failed.'; return; }
+      if (!d.ok) {
+        if (d.error === 'verify_email') { showVerifyNotice(d.email || $('liEmail').value); return; }
+        $('authErr').textContent = d.error || 'Login failed.'; return;
+      }
       setUser(d.user);
     }
     async function doSignup() {
@@ -702,7 +825,26 @@
       });
       const d = await r.json();
       if (!d.ok) { $('authErr').textContent = d.error || 'Signup failed.'; return; }
+      if (d.verify_sent) { showVerifyNotice(d.email); return; }
       setUser(d.user);
+    }
+    let resendEmail = '';
+    function showVerifyNotice(email) {
+      resendEmail = email || '';
+      $('authErr').textContent = '';
+      $('verifyMsg').textContent = 'Check your email — we sent a confirmation link to ' + resendEmail + '. Click it to activate your free trial.';
+      $('verifyWrap').style.display = 'block';
+      showAuth();
+    }
+    async function doResend() {
+      $('authErr').textContent = '';
+      const r = await fetch('/api/auth/resend-verification', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: resendEmail })
+      });
+      const d = await r.json();
+      if (!d.ok) { $('authErr').textContent = d.error || 'Resend failed.'; return; }
+      $('verifyMsg').textContent = 'Sent — check your inbox for the confirmation link.';
     }
     async function doLogout() {
       await fetch('/api/auth/logout', { method: 'POST' });
@@ -713,6 +855,23 @@
     }
 
     toggleMode();
+    (function handleVerifyParams() {
+      const q = new URLSearchParams(location.search);
+      const v = q.get('verified') || q.get('verify');
+      if (!v) return;
+      history.replaceState(null, '', location.pathname);
+      if (v === '1') {
+        showAuth();
+        $('authOk').style.display = 'block';
+        $('authOk').textContent = '✅ Email confirmed — you are logged in. Your free trial is active.';
+      } else if (v === 'expired') {
+        showAuth();
+        $('authErr').textContent = 'That confirmation link expired. Log in to get a fresh one.';
+      } else {
+        showAuth();
+        $('authErr').textContent = 'That confirmation link is not valid. Log in to get a fresh one.';
+      }
+    })();
     checkAuth();
   </script>
 </body>
