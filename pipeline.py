@@ -232,6 +232,26 @@ def geocode_address(query: str):
     return _census_geocode(query)
 
 
+def geocode_place(query: str):
+    """Best-effort map center for a query that won't rooftop-geocode.
+
+    Returns (lat, lng, label) for the closest Nominatim match of any kind
+    (street, neighbourhood, city…), or None. Used to center the manual
+    pin-drop picker so the user can point at the right roof themselves.
+    """
+    d = _nominatim("/search", {"q": query, "countrycodes": "us",
+                               "format": "json", "addressdetails": 1,
+                               "limit": 1})
+    if not d:
+        return None
+    r = d[0]
+    try:
+        return (float(r["lat"]), float(r["lon"]),
+                str(r.get("display_name", ""))[:90])
+    except (TypeError, ValueError, KeyError):
+        return None
+
+
 def _cell_of(lat: float, lng: float) -> tuple[int, int]:
     # ~35m roof cell; rotation + dedup granularity.
     return (round(lat * 3000), round(lng * 3000))

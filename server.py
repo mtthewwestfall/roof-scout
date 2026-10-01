@@ -824,10 +824,20 @@ def start_scan():
     else:
         house = pipeline.geocode_address(raw)
     if not house:
-        return jsonify({"ok": False, "error":
-                        f"Couldn't locate “{raw}”. Try a full street address "
-                        "with city and state, or paste coordinates like "
-                        "39.4781,-80.19354."}), 400
+        place = None
+        try:
+            gp = pipeline.geocode_place(raw)
+            if gp:
+                place = {"lat": gp[0], "lng": gp[1], "label": gp[2]}
+        except Exception:
+            place = None
+        body = {"ok": False, "error":
+                f"Couldn't locate “{raw}”. Try a full street address "
+                "with city and state, paste coordinates like "
+                "39.4781,-80.19354 — or drop a pin on the aerial map below."}
+        if place:
+            body["place"] = place
+        return jsonify(body), 400
     blocked = quota_ok()
     if blocked:
         return blocked
@@ -842,6 +852,26 @@ def start_scan():
                          daemon=True)
     t.start()
     return jsonify({"ok": True, "job_id": job_id, "quota": quota})
+
+
+@app.get("/api/place")
+def place_lookup():
+    """Best-effort map center for the pin-drop picker ("center on" box)."""
+    user, err = _require_user()
+    if err:
+        return err
+    q = (request.args.get("q") or "").strip()
+    if len(q) < 2:
+        return jsonify({"ok": False, "error": "Enter a city, ZIP, or street."}), 400
+    gp = None
+    try:
+        gp = pipeline.geocode_place(q)
+    except Exception:
+        gp = None
+    if not gp:
+        return jsonify({"ok": False, "error": f"Couldn't locate “{q}”."}), 404
+    return jsonify({"ok": True,
+                    "place": {"lat": gp[0], "lng": gp[1], "label": gp[2]}})
 
 
 @app.get("/api/scan/<job_id>")

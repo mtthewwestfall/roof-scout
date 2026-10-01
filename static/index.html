@@ -163,6 +163,9 @@
       <button class="ghost" id="coBtn" onclick="toggleCo()">Company</button>
       <div id="userChip" class="hidden"><span id="userEmail"></span><a id="adminLink" href="/admin" class="hidden" style="color:#4da3ff;font-size:12px;">Admin</a><button onclick="doLogout()">Log out</button></div>
     </div>
+    <div id="pinLink" class="hidden" style="padding: 0 16px 8px; font-size: 13px;">
+      <a href="#" onclick="openPinPicker(null); return false;" style="color:#4da3ff;">📍 Can't find the address? Drop a pin on the aerial map instead</a>
+    </div>
   </header>
   <div id="trialBanner" class="hidden"></div>
   <div id="coPanel" class="hidden">
@@ -242,10 +245,12 @@
         input.placeholder = "Enter full address or lat,lon (e.g. 131 Arch St, Cumberland, MD 21502)";
         btn.innerText = "Inspect Roof";
         $('countSel').style.display = 'none';
+        $('pinLink').classList.remove('hidden');
       } else {
         input.placeholder = "Enter 5-digit ZIP code (e.g. 26554)";
         btn.innerText = "Scan ZIP Code";
         $('countSel').style.display = '';
+        $('pinLink').classList.add('hidden');
       }
     }
 
@@ -277,7 +282,13 @@
             Roof Scout leads are exclusive to you.</p></div>`;
           return;
         }
-        if (!data.ok) throw new Error(data.error || "Search failed");
+        if (!data.ok) {
+          if (mode === 'single' && /Couldn't locate/.test(data.error || '')) {
+            openPinPicker(data.place || null, data.error);
+            return;
+          }
+          throw new Error(data.error || "Search failed");
+        }
         if (data.quota) setQuota(data.quota);
         if (data.cached) { renderResults(data.payload.leads || [], data.payload.area); }
         else { await pollJob(data.job_id); }
@@ -300,6 +311,74 @@
         if (j.status === 'error') throw new Error(j.error || "Scan failed");
       }
       throw new Error("Scan timed out — try again.");
+    }
+
+    /* ---------- pin-drop picker (manual roof chooser) ---------- */
+    let pinMap = null, pinMarker = null;
+    function openPinPicker(center, errMsg) {
+      if (pinMap) { pinMap.remove(); pinMap = null; pinMarker = null; }
+      const c = center || { lat: 39.6295, lng: -79.9559, label: '' }; // Morgantown WV default
+      const sidebar = $('sidebar');
+      sidebar.innerHTML = `
+        <div class="card">
+          <h3 style="margin-top:0;">📍 Drop a pin on the roof</h3>
+          ${errMsg ? `<p style="font-size:13px; color:#b45309;">${esc(errMsg)}</p>` : ''}
+          <p class="dim" style="font-size:13px; margin: 0 0 8px;" id="pinLabel">${esc(c.label || '')}</p>
+          <div style="display:flex; gap:6px; margin-bottom:8px;">
+            <input id="pinCenterInput" placeholder="Center on city or ZIP…" style="flex:1;" />
+            <button class="ghost" onclick="centerPinMap()">Center</button>
+          </div>
+          <div id="pinMap" style="height:360px; border-radius:8px; z-index:0;"></div>
+          <p style="font-size:13px; margin:10px 0 4px;">Drag the pin onto the exact rooftop, then scan:</p>
+          <p style="margin:0 0 4px;"><b id="pinCoords"></b></p>
+          <p id="pinMsg" style="color:#dc2626; font-size:13px; min-height:18px; margin:0 0 8px;"></p>
+          <div style="display:flex; gap:8px;">
+            <button onclick="scanFromPin()">Scan this roof</button>
+            <button class="ghost" onclick="closePinPicker()">Cancel</button>
+          </div>
+        </div>`;
+      pinMap = L.map('pinMap').setView([c.lat, c.lng], 18);
+      L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        { maxZoom: 20, attribution: 'Imagery &copy; Esri' }).addTo(pinMap);
+      pinMarker = L.marker([c.lat, c.lng], { draggable: true }).addTo(pinMap);
+      pinMarker.on('dragend', updatePinReadout);
+      pinMap.on('click', (e) => { pinMarker.setLatLng(e.latlng); updatePinReadout(); });
+      setTimeout(() => pinMap.invalidateSize(), 60);
+      updatePinReadout();
+    }
+    function updatePinReadout() {
+      if (!pinMarker) return;
+      const p = pinMarker.getLatLng();
+      $('pinCoords').textContent = p.lat.toFixed(5) + ', ' + p.lng.toFixed(5);
+    }
+    async function centerPinMap() {
+      const q = $('pinCenterInput').value.trim();
+      if (!q || !pinMap) return;
+      $('pinMsg').textContent = 'Locating…';
+      try {
+        const res = await fetch('/api/place?q=' + encodeURIComponent(q));
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || 'Not found');
+        $('pinMsg').textContent = '';
+        $('pinLabel').textContent = data.place.label || '';
+        pinMap.setView([data.place.lat, data.place.lng], 18);
+        pinMarker.setLatLng([data.place.lat, data.place.lng]);
+        updatePinReadout();
+      } catch (e) { $('pinMsg').textContent = e.message; }
+    }
+    function scanFromPin() {
+      if (!pinMarker) return;
+      const p = pinMarker.getLatLng();
+      const q = p.lat.toFixed(5) + ',' + p.lng.toFixed(5);
+      closePinPicker();
+      if ($('searchMode').value !== 'single') $('searchMode').value = 'single';
+      toggleMode();
+      $('queryInput').value = q;
+      runSearch();
+    }
+    function closePinPicker() {
+      if (pinMap) { pinMap.remove(); pinMap = null; pinMarker = null; }
+      $('sidebar').innerHTML = `<div style="color:#64748b; font-size:14px; text-align:center; margin-top:40px;">Enter a ZIP code or a single address to inspect a roof.</div>`;
     }
 
     /* ---------- pitch hook ---------- */

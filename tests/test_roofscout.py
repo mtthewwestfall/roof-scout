@@ -912,3 +912,58 @@ class TestPrescreen:
         out = pipeline.prescreen_damage("k", cands, 5,
                                         prescreener=lambda b: [1] * len(b))
         assert out == cands  # pool <= count: returned as-is
+
+
+# ---------------- pin-drop picker ----------------
+
+class TestPinPicker:
+    def test_geocode_place_parses_nominatim(self, monkeypatch):
+        monkeypatch.setattr(
+            pipeline, "_nominatim",
+            lambda path, params: [{"lat": "39.6295", "lon": "-79.9559",
+                                   "display_name": "Morgantown, WV, USA"}])
+        out = pipeline.geocode_place("Morgantown WV")
+        assert out[0] == pytest.approx(39.6295)
+        assert out[1] == pytest.approx(-79.9559)
+        assert "Morgantown" in out[2]
+
+    def test_geocode_place_none(self, monkeypatch):
+        monkeypatch.setattr(pipeline, "_nominatim",
+                            lambda path, params: [])
+        assert pipeline.geocode_place("zzzzz") is None
+
+    def test_failed_geocode_includes_place_and_consumes_nothing(
+            self, app_client, monkeypatch):
+        monkeypatch.setattr(pipeline, "geocode_address", lambda q: None)
+        monkeypatch.setattr(pipeline, "geocode_place",
+                            lambda q: (39.6295, -79.9559, "Morgantown, WV"))
+        signup(app_client, "t@x.com")
+        r = app_client.post("/api/scan", json={"q": "Dad's House WV"})
+        assert r.status_code == 400
+        body = r.get_json()
+        assert body["place"]["lat"] == pytest.approx(39.6295)
+        assert quota_of(app_client)["scans_left"] == 1  # nothing consumed
+
+    def test_failed_geocode_without_place(self, app_client, monkeypatch):
+        monkeypatch.setattr(pipeline, "geocode_address", lambda q: None)
+        monkeypatch.setattr(pipeline, "geocode_place", lambda q: None)
+        signup(app_client, "t@x.com")
+        r = app_client.post("/api/scan", json={"q": "Nope Nowhere XX"})
+        assert r.status_code == 400
+        assert "place" not in r.get_json()
+
+    def test_place_endpoint(self, app_client, monkeypatch):
+        monkeypatch.setattr(pipeline, "geocode_place",
+                            lambda q: (38.99, -78.76, "Cumberland, MD"))
+        signup(app_client, "t@x.com")
+        r = app_client.get("/api/place?q=Cumberland")
+        assert r.status_code == 200
+        assert r.get_json()["place"]["label"] == "Cumberland, MD"
+
+    def test_place_endpoint_not_found(self, app_client, monkeypatch):
+        monkeypatch.setattr(pipeline, "geocode_place", lambda q: None)
+        signup(app_client, "t@x.com")
+        assert app_client.get("/api/place?q=zzz").status_code == 404
+
+    def test_place_endpoint_anon_401(self, app_client):
+        assert app_client.get("/api/place?q=Cumberland").status_code == 401
