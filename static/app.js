@@ -35,10 +35,44 @@
     });
   }
 
+  // Damage bounding boxes over the aerial thumbnail (0-1000 normalized coords)
+  function renderDamageOverlays(damageBoxes) {
+    return (damageBoxes || []).map((b) => {
+      const box = b.box || b.box_2d;
+      if (!box || box.length !== 4) return '';
+      const [ymin, xmin, ymax, xmax] = box;
+      const top = (ymin / 1000) * 100;
+      const left = (xmin / 1000) * 100;
+      const height = ((ymax - ymin) / 1000) * 100;
+      const width = ((xmax - xmin) / 1000) * 100;
+      return `<div class="dmgbox" style="top:${top}%;left:${left}%;width:${width}%;height:${height}%;" title="${esc(b.label || 'damage')}"><span>${esc(b.label || 'damage')}</span></div>`;
+    }).join('');
+  }
+
+  function exportCSV() {
+    const leads = visibleLeads();
+    if (!leads.length) return;
+    const q = (s) => `"${String(s == null ? '' : s).replace(/"/g, '""')}"`;
+    let csv = 'Address,City,State,ZIP,County,Grade,Material,Pitch,Evidence,Obstruction,MapsLink\n';
+    leads.forEach((l) => {
+      csv += [q(l.address), q(l.city), q(l.state), q(l.postcode), q(l.county),
+              l.grade, q(l.material), q(l.pitch),
+              q((l.evidence || []).join('; ')), q(l.obstruction),
+              q(l.maps_url)].join(',') + '\n';
+    });
+    const blob = new Blob([csv], {type: 'text/csv'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `roof_leads_${activeTab}.csv`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  }
+
   const GRADE_WORD = {1: 'FAILING', 2: 'WORN'};
   function buildPitch(l, co) {
     const ev = (l.evidence || []).map((e) => '- ' + e).join('\n');
     const loc = [l.address, l.city, l.state, l.postcode].filter(Boolean).join(', ');
+    const specs = [l.material, l.pitch ? l.pitch + ' pitch' : ''].filter(Boolean).join(' · ');
     const verdict = l.grade === 1
       ? 'this roof is likely failing and should be replaced before the next major storm turns it into interior damage.'
       : 'this roof is worn and likely needs repair soon, before small problems become expensive ones.';
@@ -47,7 +81,7 @@
 
 Hi, I'm ${co.rep} with ${co.name} (${co.phone}).
 
-We were reviewing recent aerial imagery of the roof at ${loc} and spotted signs it needs attention:
+We were reviewing recent aerial imagery of the roof at ${loc}${specs ? ` (appears to be ${specs})` : ''} and spotted signs it needs attention:
 ${ev || '- visible wear (see aerial photo)'}
 
 Our roof grade: ${l.grade}/5 (${GRADE_WORD[l.grade] || ''}) — ${verdict}
@@ -158,13 +192,18 @@ ${co.name} · ${co.phone}`);
       bits.push(esc(loc));
       if (l.county) bits.push(esc(l.county) + ' Co.');
       const isRepair = l.grade === 1 || l.grade === 2;
+      const specs = [l.material, l.pitch].filter(Boolean).map(esc).join(' · ');
+      const showBoxes = isRepair && (l.damage_boxes || []).length;
       card.innerHTML =
-        `<img src="${esc(l.img)}" alt="Aerial view of ${esc(l.address)}" loading="lazy">` +
+        `<div class="imgwrap"><img src="${esc(l.img)}" alt="Aerial view of ${esc(l.address)}" loading="lazy">` +
+        (showBoxes ? renderDamageOverlays(l.damage_boxes) : '') + `</div>` +
         `<div class="card-body">` +
         `<div class="card-top"><span class="grade g${l.grade}">${GRADE_LABEL[l.grade] || ''}</span>` +
         `<span class="dim">${esc(l.confidence || '')} confidence</span></div>` +
         `<div class="addr">${esc(l.address)}</div>` +
         `<div class="sub">${bits.join(' · ')}</div>` +
+        (specs ? `<div class="sub">${specs}</div>` : '') +
+        (l.obstruction ? `<div class="sub dim">View note: ${esc(l.obstruction)}</div>` : '') +
         `<div class="sub dim">Public record: residential address via OpenStreetMap · ` +
         `Phone not publicly listed in free sources</div>` +
         (ev ? `<ul class="ev">${ev}</ul>` : '') +
@@ -182,7 +221,8 @@ ${co.name} · ${co.phone}`);
         const panel = card.querySelector('.pitch');
         const ta = card.querySelector('.pitchtext');
         ta.dataset.lead = JSON.stringify({address: l.address, city: l.city,
-          state: l.state, postcode: l.postcode, grade: l.grade, evidence: l.evidence});
+          state: l.state, postcode: l.postcode, grade: l.grade, evidence: l.evidence,
+          material: l.material, pitch: l.pitch});
         pitchBtn.addEventListener('click', () => {
           const opening = panel.classList.contains('hidden');
           panel.classList.toggle('hidden');
@@ -234,6 +274,12 @@ ${co.name} · ${co.phone}`);
 
   $('tabRepair').addEventListener('click', () => setTab('repair'));
   $('tabAll').addEventListener('click', () => setTab('all'));
+  const csvBtn = document.createElement('button');
+  csvBtn.id = 'csvBtn';
+  csvBtn.className = 'tab';
+  csvBtn.textContent = '⬇ Export CSV';
+  csvBtn.addEventListener('click', exportCSV);
+  $('tabAll').after(csvBtn);
   bindCompany();
   $('scanForm').addEventListener('submit', startScan);
 })();

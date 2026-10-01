@@ -92,7 +92,7 @@ def _run_scan(job_id: str, zipcode: str, count: int, grader=None):
                 h["imagery"] = src
             return h
         from concurrent.futures import ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=4) as ex:
+        with ThreadPoolExecutor(max_workers=8) as ex:
             list(ex.map(grab, houses))
         houses = [h for h in houses if h.get("image_b64")]
         if not houses:
