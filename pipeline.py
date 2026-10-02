@@ -5,6 +5,7 @@ Sources (all free, no keys):
 - Nominatim (OpenStreetMap) for zip centroid + reverse-geocoded addresses.
 - Esri World Imagery tiles for high-res aerial views (primary).
 - USGS NAIP aerial photos via the National Map (free fallback where Esri has no coverage).
+- Google Static Maps satellite (GOOGLE_MAPS_API_KEY, paid) — aerial fallback only, used solely when Esri and USGS have nothing.
 - Mapillary street-level photos (MAPILLARY_ACCESS_TOKEN), then Google Street
   View Static API (GOOGLE_MAPS_API_KEY) as last-resort fallbacks when no aerial
   view exists. Each is skipped when its key is unset.
@@ -806,6 +807,30 @@ def _mapillary_image(lat: float, lng: float, radius_m: float = 50.0) -> bytes | 
     return _square_jpeg(_http_get(pick["thumb_1024_url"], timeout=30))
 
 
+def _google_satellite_image(lat: float, lng: float, z: int) -> bytes | None:
+    """Google Static Maps satellite view (paid; needs a key).
+
+    Aerial fallback only — called when Esri and USGS have no coverage.
+    Uses the official Static Maps API (maptype=satellite), not tile
+    scraping. Each request bills ~$0.002 after the 10k/month free tier.
+    """
+    key = os.environ.get("GOOGLE_MAPS_API_KEY", "")
+    if not key:
+        return None
+    url = ("https://maps.googleapis.com/maps/api/staticmap?"
+           + urllib.parse.urlencode({
+               "center": f"{lat},{lng}", "zoom": z, "size": "512x512",
+               "maptype": "satellite", "key": key}))
+    img = _http_get(url, timeout=30)
+    if not img:
+        return None
+    # Static API returns an error image (not an exception) on failure;
+    # reject tiny responses that can't be a real 512x512 photo.
+    if len(img) < 10000:
+        return None
+    return _square_jpeg(img)
+
+
 def _streetview_image(lat: float, lng: float) -> bytes | None:
     """Google Street View photo aimed at the house (paid; needs a key).
 
@@ -871,9 +896,10 @@ def roof_image(lat: float, lng: float, z: int = 20) -> tuple[bytes | None, int, 
 
     Where Esri has no coverage at the requested zoom it serves placeholder
     tiles; step down to z-1 then z-2, then fall back to free USGS NAIP aerial
-    photos. With no aerial view at all, try a street-level photo (Mapillary,
-    then Google Street View) before giving up. Never grade a placeholder as
-    if it were a roof. Street-level views report zoom 0.
+    photos, then Google satellite (paid, only when the free aerial sources
+    have nothing). With no aerial view at all, try a street-level photo
+    (Mapillary, then Google Street View) before giving up. Never grade a
+    placeholder as if it were a roof. Street-level views report zoom 0.
     Returns (JPEG bytes or None, zoom used, imagery source).
     """
     for zz in (z, z - 1, z - 2):
@@ -883,6 +909,9 @@ def roof_image(lat: float, lng: float, z: int = 20) -> tuple[bytes | None, int, 
     usgs = _usgs_image(lat, lng)
     if usgs:
         return usgs, 18, "usgs"
+    gsat = _google_satellite_image(lat, lng, z)
+    if gsat:
+        return gsat, z, "gsat"
     mly = _mapillary_image(lat, lng)
     if mly:
         return mly, 0, "mapillary"

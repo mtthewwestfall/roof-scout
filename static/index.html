@@ -439,6 +439,7 @@
     const imgCaption = (lead) => ({
       mapillary: 'Street-level photo used for this report (no aerial view available) · © Mapillary contributors, CC BY-SA',
       streetview: 'Street-level photo used for this report (no aerial view available) · Imagery © Google',
+      gsat: 'Aerial satellite image used for this report (roof centered) · Imagery © Google',
     }[lead.imagery] || 'Aerial survey image used for this report (roof centered)');
     const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
       ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));

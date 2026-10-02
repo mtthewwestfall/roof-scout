@@ -2754,3 +2754,43 @@ class TestEvidenceDepriming:
         assert "as if to someone who cannot see the image" in p
         assert "size or count" in p
         assert "car door" in p  # good-example anchor
+
+
+class TestGoogleSatelliteFallback:
+    def test_satellite_skipped_without_key(self, monkeypatch):
+        monkeypatch.delenv("GOOGLE_MAPS_API_KEY", raising=False)
+        assert pipeline._google_satellite_image(39.0, -80.0, 20) is None
+
+    def test_roof_image_tries_gsat_after_usgs(self, monkeypatch):
+        # Esri and USGS have nothing: Google satellite fills the gap before
+        # any street-level source is tried.
+        monkeypatch.setenv("GOOGLE_MAPS_API_KEY", "test-key")
+        calls = []
+        monkeypatch.setattr(pipeline, "_centered_esri",
+                            lambda lat, lng, z: None)
+        monkeypatch.setattr(pipeline, "_usgs_image", lambda lat, lng: None)
+
+        def fake_gsat(lat, lng, z):
+            calls.append(("gsat", z))
+            return b"gsat-bytes"
+        monkeypatch.setattr(pipeline, "_google_satellite_image", fake_gsat)
+        monkeypatch.setattr(pipeline, "_mapillary_image",
+                            lambda lat, lng: (_ for _ in ()).throw(
+                                AssertionError("mapillary should not run")))
+        img, zoom, src = pipeline.roof_image(39.0, -80.0, 20)
+        assert src == "gsat"
+        assert zoom == 20
+        assert img == b"gsat-bytes"
+        assert calls == [("gsat", 20)]
+
+    def test_roof_image_prefers_free_aerial(self, monkeypatch):
+        # Esri has it: Google satellite is never called.
+        monkeypatch.setenv("GOOGLE_MAPS_API_KEY", "test-key")
+        monkeypatch.setattr(pipeline, "_centered_esri",
+                            lambda lat, lng, z: b"esri-bytes")
+
+        def fake_gsat(lat, lng, z):
+            raise AssertionError("gsat should not run when Esri has it")
+        monkeypatch.setattr(pipeline, "_google_satellite_image", fake_gsat)
+        img, zoom, src = pipeline.roof_image(39.0, -80.0, 20)
+        assert src == "esri"
