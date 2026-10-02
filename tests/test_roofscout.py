@@ -2737,3 +2737,20 @@ class TestCauseFields:
         pipeline.grade_roofs("k", houses, grader=grader)
         assert houses[0]["likely_cause"] == "Overhanging oak drops debris."
         assert houses[0]["prevention_tip"] == "Trim the oak back."
+
+
+class TestEvidenceDepriming:
+    def test_grade_prompt_bans_rubric_vocabulary(self):
+        # Regression: the model was emitting byte-identical "visual
+        # evidence" for different roofs ("mottled granule loss across the
+        # front slope" etc.) — Grade-3 rubric wording leaking into the
+        # evidence field. The prompt must forbid that vocabulary outright
+        # and demand concrete sizes/positions.
+        p = pipeline.GRADE_PROMPT
+        for word in ["mottled", "granule", "curling", "darkening",
+                     "staining", "aging", "deterioration", "weathering",
+                     "blistering", "alligatoring"]:
+            assert word in p, f"forbidden word {word!r} missing from prompt"
+        assert "as if to someone who cannot see the image" in p
+        assert "size or count" in p
+        assert "car door" in p  # good-example anchor
