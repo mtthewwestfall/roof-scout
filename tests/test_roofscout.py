@@ -953,17 +953,28 @@ class TestRotation:
                             lambda houses, progress=None: houses)
 
     def test_zero_lead_scan_moves_outward(self, db, monkeypatch):
+        # Backfill guarantee: triage returns the full requested count even
+        # when nothing scores damaged; the deep grade finds them healthy,
+        # the scan finishes clean, and rotation still moves outward.
         self._scan_env(monkeypatch, 300)
+        monkeypatch.setattr(pipeline, "street_second_opinion",
+                            lambda *a, **k: None)
+        grader = lambda imgs: [{"grade": 4, "abandoned": False,
+                                "confidence": "high", "evidence": [],
+                                "material": "", "pitch": "",
+                                "obstruction": "", "damage_boxes": []}
+                               for _ in imgs]
         server._jobs["j1"] = {"status": "running"}
         server._run_scan("j1", "12345", 20, user_id="u1",
-                         prescreener=lambda b: [1] * len(b))
-        assert server._jobs["j1"]["status"] == "error"
-        assert "200 roofs checked" in server._jobs["j1"]["error"]
+                         prescreener=lambda b: [1] * len(b), grader=grader)
+        assert server._jobs["j1"]["status"] == "done"
+        assert server._jobs["j1"]["leads"] == []
+        assert "20 properties evaluated" in server._jobs["j1"]["msg"]
         assert len(server._seen_cells("u1", "12345")) == 200
         server._jobs["j2"] = {"status": "running"}
         server._run_scan("j2", "12345", 20, user_id="u1",
-                         prescreener=lambda b: [1] * len(b))
-        assert "100 roofs checked" in server._jobs["j2"]["error"]
+                         prescreener=lambda b: [1] * len(b), grader=grader)
+        assert server._jobs["j2"]["status"] == "done"
         assert len(server._seen_cells("u1", "12345")) == 300
 
     def test_lead_scan_records_every_triaged_roof(self, db, monkeypatch):
@@ -1073,14 +1084,15 @@ class TestPrescreen:
         assert pipeline.prescreen_damage("k", [], 5) == []
 
     def test_small_pool_still_triaged(self, monkeypatch):
-        # No passthrough: even a small pool gets the micro scan, and only
-        # visibly damaged roofs earn the deep scan.
+        # No passthrough: even a small pool gets the micro scan. Damaged
+        # roofs go first; the backfill guarantee fills the rest so the
+        # scan always deep-evaluates the full requested count.
         cands = self._cands(3)
         monkeypatch.setattr(pipeline, "roof_image",
                             lambda lat, lng, z=20: (b"img", z, "esri"))
         out = pipeline.prescreen_damage("k", cands, 5,
                                         prescreener=lambda b: [1] * len(b))
-        assert out == []  # all pristine -> nothing deep-scanned
+        assert len(out) == 3  # all pristine -> backfilled to full pool
         out = pipeline.prescreen_damage("k", cands, 5,
                                         prescreener=lambda b: [4] * len(b))
         assert len(out) == 3  # all damaged -> all deep-scanned
@@ -1102,7 +1114,9 @@ class TestPrescreen:
         out = pipeline.prescreen_damage("k", cands, 4, prescreener=pre)
         assert calls == [4, 4, 1, 1, 1, 1]
         assert [c["micro_score"] for c in cands] == [1, 4, 2, 5]
-        assert [c["address"] for c in out] == ["3 St", "1 St"]
+        # damaged first (3 St, 1 St), then backfill to the full count
+        assert [c["address"] for c in out] == ["3 St", "1 St",
+                                              "2 St", "0 St"]
 
     def test_vacant_buildings_keep_flag_through_triage(self, monkeypatch):
         # Vacant-flagged buildings are NOT dropped: they get triaged like
@@ -1190,14 +1204,43 @@ class TestDamagedOnly:
                  "address": f"{i} Main St", "postcode": "12345",
                  "key": f"{i} Main St|12345"} for i in range(n)]
 
-    def test_pristine_and_unverifiable_never_deep_scanned(self, monkeypatch):
+    def test_backfill_guarantees_full_count_damaged_first(self, monkeypatch):
+        # Only some roofs score damaged; the deep scan still gets exactly
+        # `count` properties -- damaged worst-first, then next-best scores.
+        cands = self._cands(10)
+        monkeypatch.setattr(pipeline, "roof_image",
+                            lambda lat, lng, z=20: (b"img", z, "esri"))
+        vals = iter([1, 0, 5, 2, 0, 4, 1, 3, 2, 5])
+        out = pipeline.prescreen_damage(
+            "k", cands, 5,
+            prescreener=lambda b64s: [next(vals) for _ in b64s])
+        # scores idx0..9: 1,0,5,2,0,4,1,3,2,5
+        # damaged (>=3): idx2, idx9, idx5, idx7 -> then backfill idx3 (2)
+        assert [c["address"] for c in out] == ["2 Main St", "9 Main St",
+                                              "5 Main St", "7 Main St",
+                                              "3 Main St"]
+        assert len(out) == 5
+
+    def test_backfill_never_exceeds_count(self, monkeypatch):
+        # More damaged roofs than count: still capped, worst first.
+        cands = self._cands(8)
+        monkeypatch.setattr(pipeline, "roof_image",
+                            lambda lat, lng, z=20: (b"img", z, "esri"))
+        out = pipeline.prescreen_damage(
+            "k", cands, 3,
+            prescreener=lambda b64s: [5] * len(b64s))
+        assert len(out) == 3
+
+    def test_pristine_pool_backfilled_not_skipped(self, monkeypatch):
         cands = self._cands(8)
         monkeypatch.setattr(pipeline, "roof_image",
                             lambda lat, lng, z=20: (b"img", z, "esri"))
         out = pipeline.prescreen_damage(
             "k", cands, 8,
             prescreener=lambda b64s: [1, 2, 0, 1, 2, 0, 1, 2][:len(b64s)])
-        assert out == []  # nothing visibly damaged -> no deep scan
+        # nothing visibly damaged -> backfilled so the scan still
+        # deep-evaluates the full requested count
+        assert len(out) == 8
 
     def test_damaged_capped_worst_first(self, monkeypatch):
         cands = self._cands(8)

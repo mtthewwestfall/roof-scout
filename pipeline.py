@@ -1466,12 +1466,28 @@ def prescreen_damage(api_key: str, cands: list[dict], count: int,
     # deep scan. Pristine/minor (1-2) and unverifiable (0) never do.
     ranked = sorted(scored, key=lambda i: -scored[i])
     damaged = [i for i in ranked if scored[i] >= 3]
-    picked = [cands[i] for i in damaged[:count]]
+    picked_idx = damaged[:count]
+    # Backfill guarantee: every scan deep-evaluates exactly `count`
+    # properties. Damaged roofs go first (worst first); any remaining
+    # slots are filled with the next-best triage scores so the customer
+    # always gets the full count they asked for. Backfilled healthy roofs
+    # grade out in the deep scan -- they never become leads.
+    if len(picked_idx) < count:
+        picked_set = set(picked_idx)
+        for i in ranked:
+            if len(picked_idx) >= count:
+                break
+            if i not in picked_set:
+                picked_idx.append(i)
+                picked_set.add(i)
+    picked = [cands[i] for i in picked_idx]
     for c in picked:
         c.pop("image_b64", None)
+    n_damaged = sum(1 for i in picked_idx if scored[i] >= 3)
     if progress:
         progress("prescreen", 1, 1,
-                 f"{len(picked)} damaged roofs flagged for deep-dive")
+                 f"{len(picked)} roofs selected for deep-dive "
+                 f"({n_damaged} flagged damaged)")
     return picked
 
 

@@ -413,6 +413,7 @@
     let currentLeads = [];
     let lastFootprintsOk = true;
     let lastArea = '';
+    let lastEvaluated = 0;
 
     const gradeColors = { 1: '#dc2626', 2: '#ea580c', 3: '#d97706', 4: '#16a34a', 5: '#059669', 0: '#64748b' };
     const gradeLabels = { 1: 'Failing (Replace)', 2: 'Worn (Repair Soon)', 3: 'Aging (Watch)', 4: 'Healthy', 5: 'Solid', 0: 'Unclear' };
@@ -526,10 +527,10 @@
         if (data.quota) setQuota(data.quota);
         if (data.cached) {
           try {
-            localStorage.setItem('rs_last_results', JSON.stringify({leads: data.payload.leads || [], area: data.payload.area, footprints_ok: data.payload.footprints_ok}));
+            localStorage.setItem('rs_last_results', JSON.stringify({leads: data.payload.leads || [], area: data.payload.area, footprints_ok: data.payload.footprints_ok, evaluated: data.payload.evaluated || 0}));
             localStorage.removeItem('rs_last_job');
           } catch (e) {}
-          renderResults(data.payload.leads || [], data.payload.area, data.payload.footprints_ok);
+          renderResults(data.payload.leads || [], data.payload.area, data.payload.footprints_ok, data.payload.evaluated);
         }
         else {
           try {
@@ -554,7 +555,7 @@
         if (!j.ok) throw new Error(j.error || "Scan failed");
         const pm = $('progMsg');
         if (pm) pm.innerHTML = `${esc(j.msg || 'Working…')}<br><span class="dim">${j.done || 0}/${j.total || 0}</span>`;
-        if (j.status === 'done') { renderResults(j.leads || [], j.area, j.footprints_ok); return; }
+        if (j.status === 'done') { renderResults(j.leads || [], j.area, j.footprints_ok, j.evaluated); return; }
         if (j.status === 'error') throw new Error(j.error || "Scan failed");
       }
       throw new Error("Scan timed out — try again.");
@@ -653,12 +654,13 @@
     }
 
     /* ---------- results ---------- */
-    function renderResults(leads, area, footprintsOk) {
+    function renderResults(leads, area, footprintsOk, evaluated) {
       markers.forEach((m) => map.removeLayer(m));
       markers = [];
       currentLeads = leads;
       lastArea = area || '';
       if (footprintsOk !== undefined) lastFootprintsOk = footprintsOk;
+      if (evaluated !== undefined) lastEvaluated = evaluated;
       const sidebar = $('sidebar');
       sidebar.innerHTML = "";
 
@@ -672,9 +674,10 @@
       const head = document.createElement('div');
       head.style.cssText = 'margin-bottom:12px;color:#5b6b82;font-size:14px;';
       const flaggedCount = leads.filter((l) => l.needs_review).length;
+      const evalBit = lastEvaluated > 0 ? ` · <b>${lastEvaluated}</b> propert${lastEvaluated === 1 ? 'y' : 'ies'} evaluated` : '';
       head.innerHTML = leads.length
-        ? `<b>${leads.length}</b> damaged roof${leads.length === 1 ? '' : 's'} found${area ? ` in <b>${esc(area)}</b>` : ''} — worst first${flaggedCount ? ` · <b style="color:#b45309;">${flaggedCount} flagged for review</b>` : ''}`
-        : `No visibly damaged roofs found${area ? ` in <b>${esc(area)}</b>` : ''}. Try another ZIP.`;
+        ? `<b>${leads.length}</b> damaged roof${leads.length === 1 ? '' : 's'} found${area ? ` in <b>${esc(area)}</b>` : ''} — worst first${evalBit}${flaggedCount ? ` · <b style="color:#b45309;">${flaggedCount} flagged for review</b>` : ''}`
+        : `No visibly damaged roofs found${area ? ` in <b>${esc(area)}</b>` : ''}.${evalBit} Try another ZIP.`;
       sidebar.appendChild(head);
 
       if (!leads.length) {
@@ -902,14 +905,14 @@
         if (jobId) {
           const res = await fetch('/api/scan/' + encodeURIComponent(jobId));
           const j = await res.json().catch(() => ({}));
-          if (j.ok && j.status === 'done') { renderResults(j.leads || [], j.area, j.footprints_ok); return; }
+          if (j.ok && j.status === 'done') { renderResults(j.leads || [], j.area, j.footprints_ok, j.evaluated); return; }
           if (j.ok && (j.status === 'running' || j.status === 'queued')) { pollJob(jobId); return; }
           localStorage.removeItem('rs_last_job');
         }
         const raw = localStorage.getItem('rs_last_results');
         if (raw) {
           const r = JSON.parse(raw);
-          if (r && r.leads) renderResults(r.leads || [], r.area, r.footprints_ok);
+          if (r && r.leads) renderResults(r.leads || [], r.area, r.footprints_ok, r.evaluated);
         }
       } catch (e) { /* restore is best-effort */ }
     }

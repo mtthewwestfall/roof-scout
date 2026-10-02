@@ -1330,6 +1330,8 @@ def _run_houses(job_id: str, houses: list[dict], area: str,
                       "Aerial imagery unavailable right now. Try again in a bit."
                       " Your scan was refunded.")
             return
+        # Properties that actually went through the full deep evaluation.
+        evaluated = len(houses)
 
         if not GEMINI_KEY and grader is None:
             _fail_job(job_id,
@@ -1366,8 +1368,10 @@ def _run_houses(job_id: str, houses: list[dict], area: str,
                 h["review_reason"] = "; ".join(reasons)
         if not houses:
             _set_job(job_id, status="done", leads=[], area=area,
-                     msg="Done — no visibly damaged roofs found in this area. "
-                         "Try another ZIP.")
+                     evaluated=evaluated,
+                     msg=f"Done — no visibly damaged roofs found among the "
+                         f"{evaluated} properties evaluated. "
+                         f"Try another ZIP.")
             return
 
         # Pinpoint pass: zoomed damage close-up + repair breakdown for
@@ -1390,15 +1394,17 @@ def _run_houses(job_id: str, houses: list[dict], area: str,
         leads = pipeline.sort_leads(houses)
         payload = {"zip": cache[0] if cache else "", "area": area,
                    "leads": leads, "scanned_at": time.time(),
-                   "footprints_ok": footprints_ok}
+                   "footprints_ok": footprints_ok, "evaluated": evaluated}
         if cache:
             _cache_put(cache[0], cache[1], _cacheable(payload))
             _record_seen(user_id, cache[0], houses)
         flagged = sum(1 for h in leads if h.get("needs_review"))
-        msg = f"Done — {len(leads)} damaged roofs found."
+        msg = (f"Done — {len(leads)} damaged roofs found out of "
+               f"{evaluated} properties evaluated.")
         if flagged:
             msg += f" {flagged} flagged for review (possibly abandoned)."
-        _set_job(job_id, status="done", leads=leads, area=area, msg=msg)
+        _set_job(job_id, status="done", leads=leads, area=area, msg=msg,
+                 evaluated=evaluated)
     except Exception as e:
         _fail_job(job_id, f"Scan failed: {e}. Your scan was refunded.")
 
@@ -1536,6 +1542,7 @@ def start_scan():
                                         "area": cached.get("area"),
                                         "leads": leads,
                                         "footprints_ok": cached.get("footprints_ok", True),
+                                        "evaluated": cached.get("evaluated", 0),
                                         "scanned_at": cached.get("scanned_at")}})
         job_id = uuid.uuid4().hex[:12]
         with _jobs_lock:
@@ -1671,6 +1678,7 @@ def scan_status(job_id: str):
         finally:
             conn.close()
         out["area"] = job.get("area")
+        out["evaluated"] = job.get("evaluated", 0)
     if job["status"] == "error":
         out["error"] = job.get("error")
     return jsonify(out)
