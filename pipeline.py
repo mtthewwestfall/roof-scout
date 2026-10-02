@@ -912,9 +912,9 @@ CRITICAL DISCRIMINATION RULES:
 2. Shadows: differentiate sharp tree-limb shadows from sagging or missing shingles. Check whether the dark shape matches a tree next to the house.
 3. Glare: high sun angles cause white reflective glare on metal or asphalt. Do not confuse glare with missing material.
 
-For each image also report: primary_material (asphalt shingle, metal, clay/concrete tile, slate, or membrane/flat), pitch_estimate (Flat, Low-slope, Medium, or Steep), obstruction_notes — ONLY what is visibly blocking the target roof in THIS image (e.g. tree canopy over the roof, shadows, glare). If the roof is fully visible, use an empty string. NEVER write "tree cover" unless tree canopy is visibly covering part of the roof., and damage_boxes — bounding boxes as [ymin, xmin, ymax, xmax] in 0-1000 normalized coordinates around each visible damage area (missing shingles, tarps, ponding, etc.), with a short label per box. For grades 1-2 include at least one damage_box around the worst-affected area. Omit damage_boxes for healthy roofs.
+For each image also report: primary_material (asphalt shingle, metal, clay/concrete tile, slate, or membrane/flat), pitch_estimate (Flat, Low-slope, Medium, or Steep), obstruction_notes — ONLY what is visibly blocking the target roof in THIS image (e.g. tree canopy over the roof, shadows, glare). If the roof is fully visible, use an empty string. NEVER write "tree cover" unless tree canopy is visibly covering part of the roof., and damage_boxes — bounding boxes as [ymin, xmin, ymax, xmax] in 0-1000 normalized coordinates around each visible damage area (missing shingles, tarps, ponding, etc.), with a short label per box. For grades 1-2 include at least one damage_box around the worst-affected area. Omit damage_boxes for healthy roofs. For grades 1-3 also report likely_cause \u2014 what most likely caused this damage, 1-2 sentences in plain homeowner language using visible clues (e.g. overhanging trees dropping water and debris on one slope, poor drainage, aging materials) \u2014 and prevention_tip \u2014 one concrete thing that would make the next roof last longer, 1 sentence in plain homeowner language.
 
-The images are in order. Return a JSON array with exactly one object per image, in order: {"grade": 0-5, "abandoned": true/false, "confidence": "low|medium|high", "evidence": ["up to 3 short visual observations"], "primary_material": "...", "pitch_estimate": "...", "obstruction_notes": "...", "damage_boxes": [{"box_2d": [ymin,xmin,ymax,xmax], "label": "..."}]}. Return ONLY the JSON array."""
+The images are in order. Return a JSON array with exactly one object per image, in order: {"grade": 0-5, "abandoned": true/false, "confidence": "low|medium|high", "evidence": ["up to 3 short visual observations"], "primary_material": "...", "pitch_estimate": "...", "obstruction_notes": "...", "damage_boxes": [{"box_2d": [ymin,xmin,ymax,xmax], "label": "..."}], "likely_cause": "...", "prevention_tip": "..."}. Return ONLY the JSON array."""
 
 _GEMINI_URL = ("https://generativelanguage.googleapis.com/v1beta/models/"
                "gemini-3.1-flash-lite:generateContent")
@@ -951,6 +951,10 @@ def _gemini_call(api_key: str, image_b64_list: list[str],
                                            "description": "Flat, Low-slope, Medium, or Steep"},
                         "obstruction_notes": {"type": "STRING",
                                               "description": "Tree shadows, solar panels, canopy coverage, glare; empty string if clear"},
+                        "likely_cause": {"type": "STRING",
+                                         "description": "What most likely caused this damage, 1-2 sentences in plain homeowner language. Use visible clues: overhanging trees dropping water and debris on one slope, poor drainage or ponding, aging materials, storm damage, etc."},
+                        "prevention_tip": {"type": "STRING",
+                                           "description": "One concrete thing that would make the next roof last longer, 1 sentence in plain homeowner language. E.g. 'Trim branches back 6+ feet from the roofline so leaves and water don't sit on the shingles.'"},
                         "damage_boxes": {
                             "type": "ARRAY",
                             "description": "Bounding boxes outlining visible damage areas",

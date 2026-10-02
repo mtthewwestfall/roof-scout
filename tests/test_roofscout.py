@@ -2548,3 +2548,82 @@ class TestStreetSecondOpinion:
         g = {"obstruction_notes": "raw", "obstruction": "mapped"}
         pipeline._normalize_grade_keys(g)
         assert g == {"obstruction": "mapped"}
+
+
+# ---------------- Leads tab ----------------
+
+class TestMyLeads:
+    def _seed_job(self, user_id, leads, area="Testville, WV", ts=None):
+        import time as _t
+        conn = server._db()
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO scan_jobs"
+                " (job_id, user_id, status, leads, area, msg, created_at)"
+                " VALUES (?,?,?,?,?,?,?)",
+                (f"job-{_t.time()}-{len(leads)}", user_id, "done",
+                 json.dumps(leads), area, "done",
+                 ts if ts is not None else _t.time()))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_my_leads_returns_recent_scans(self, app_client):
+        signup(app_client, "leads@x.com")
+        uid = _user_id("leads@x.com")
+        l1 = mklead(address="1 Main St", grade=1)
+        l1["likely_cause"] = "Tree overhang drops water on the north slope."
+        l1["prevention_tip"] = "Trim branches back 6 feet."
+        l1["building"] = "house"
+        l2 = mklead(address="2 Main St", grade=2)
+        self._seed_job(uid, [l1, l2])
+        r = app_client.get("/api/my-leads")
+        body = r.get_json()
+        assert r.status_code == 200 and body["ok"] is True
+        assert body["count"] == 2
+        # newest first; new grader fields flow through
+        assert body["leads"][0]["likely_cause"].startswith("Tree overhang")
+        assert body["leads"][0]["prevention_tip"].startswith("Trim")
+        assert body["leads"][0]["building"] == "house"
+
+    def test_my_leads_dedupes_across_scans(self, app_client):
+        signup(app_client, "dup@x.com")
+        uid = _user_id("dup@x.com")
+        self._seed_job(uid, [mklead(address="9 Main St")], ts=1000.0)
+        self._seed_job(uid, [mklead(address="9 Main St")], ts=2000.0)
+        body = app_client.get("/api/my-leads").get_json()
+        assert body["count"] == 1  # same property scanned twice -> once
+
+    def test_my_leads_masks_locked(self, app_client):
+        signup(app_client, "mask@x.com")
+        uid = _user_id("mask@x.com")
+        self._seed_job(uid, [mklead(address="77 Locked Ln")])
+        lead = app_client.get("/api/my-leads").get_json()["leads"][0]
+        assert lead["locked"] is True
+        assert lead["address"] != "77 Locked Ln"  # masked until unlocked
+
+    def test_my_leads_requires_login(self, app_client):
+        assert app_client.get("/api/my-leads").status_code in (401, 403)
+
+
+class TestCauseFields:
+    def test_likely_cause_flows_through_grading(self, monkeypatch):
+        monkeypatch.setattr(pipeline, "roof_image",
+                            lambda lat, lng, z=20: (b"img", z, "esri"))
+
+        def grader(b64s):
+            return [{"grade": 2, "confidence": "high",
+                     "evidence": ["missing shingles"],
+                     "primary_material": "asphalt shingle",
+                     "pitch_estimate": "Medium", "obstruction_notes": "",
+                     "damage_boxes": [], "abandoned": False,
+                     "likely_cause": "Overhanging oak drops debris.",
+                     "prevention_tip": "Trim the oak back."}
+                    for _ in b64s]
+
+        houses = [{"lat": 39.0, "lng": -80.0, "key": "k1",
+                   "address": "1 Main St", "postcode": "12345",
+                   "image_b64": "aW1n"}]
+        pipeline.grade_roofs("k", houses, grader=grader)
+        assert houses[0]["likely_cause"] == "Overhanging oak drops debris."
+        assert houses[0]["prevention_tip"] == "Trim the oak back."

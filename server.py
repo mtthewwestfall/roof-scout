@@ -1637,6 +1637,44 @@ def place_lookup():
                     "place": {"lat": gp[0], "lng": gp[1], "label": gp[2]}})
 
 
+@app.get("/api/my-leads")
+def my_leads():
+    """Leads tab: the user's leads across recent scans, newest first.
+
+    Deduped by lead key (same property scanned twice shows once).
+    Addresses stay masked until each lead is unlocked, same as scan results.
+    """
+    user, err = _require_user()
+    if err:
+        return err
+    conn = _db()
+    try:
+        rows = conn.execute(
+            "SELECT leads, area FROM scan_jobs WHERE user_id=? AND status='done'"
+            " ORDER BY created_at DESC LIMIT 10", (user["id"],)).fetchall()
+        seen = set()
+        flat = []
+        for r in rows:
+            try:
+                leads = json.loads(r[0])
+            except Exception:
+                leads = []
+            for l in leads:
+                if not isinstance(l, dict):
+                    continue
+                key = _lead_key(l)
+                if key in seen:
+                    continue
+                seen.add(key)
+                l = dict(l)
+                l["_area"] = r[1]
+                flat.append(l)
+        shaped = _shape_leads(conn, flat, user)
+    finally:
+        conn.close()
+    return jsonify({"ok": True, "leads": shaped, "count": len(shaped)})
+
+
 @app.get("/api/scan/<job_id>")
 def scan_status(job_id: str):
     user, err = _require_user()
