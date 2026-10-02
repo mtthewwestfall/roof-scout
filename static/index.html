@@ -730,7 +730,7 @@
             <div class="card-actions">
               <button class="btn-unlock" data-i="${idx}" onclick="unlockLead(${idx})">🔓 Unlock this lead (${unlocksLeft} left)</button>
             </div>
-          `) : (lead.grade === 1 || lead.grade === 2) ? `
+          `) : `
             <div class="section-title">Pitch / Outbound Hook:</div>
             <div class="pitch-box">"${hook}"</div>
             <div class="card-actions">
@@ -739,8 +739,6 @@
               ${mapsBtn}${svBtn}
             </div>
             <textarea class="pitch-editor hidden" data-i="${idx}">${hook}</textarea>
-          ` : `
-            <div class="card-actions">${mapsBtn}${svBtn}</div>
           `;
         card.innerHTML = `
           ${lead.needs_review ? `<div style="margin-bottom:10px;padding:9px 11px;background:rgba(251,191,36,.08);border:1px solid rgba(251,191,36,.4);border-radius:8px;color:#92400e;font-size:12.5px;"><b>⚠️ Possibly abandoned</b> — ${esc(lead.review_reason || 'flagged for review')}. Verify before mailing.</div>` : ''}
