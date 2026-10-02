@@ -304,9 +304,9 @@
       .hdr-sep, .sys-status { display: none; }
       header input { width: 100%; flex: 1 1 200px; }
       .controls { margin-left: 0; width: 100%; }
-      #workspace { flex-direction: column; }
-      #map { min-height: 42vh; }
-      #sidebar { max-width: none; border-left: none; border-top: 1px solid rgba(56, 189, 248, .12); }
+      #workspace { flex-direction: column; overflow-y: auto; }
+      #map { flex: none; height: 34vh; min-height: 240px; }
+      #sidebar { max-width: none; border-left: none; border-top: 1px solid rgba(56, 189, 248, .12); overflow-y: visible; }
       .auth-card { padding: 24px 20px; }
     }
   </style>
