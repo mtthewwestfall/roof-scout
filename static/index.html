@@ -409,6 +409,16 @@
       <span style="flex:1;"></span>
       <button id="printAllBtn" onclick="printAllLetters()">&#x1F5A8;&#xFE0F; Print all letters</button>
     </div>
+    <div class="card" id="copilotCard" style="margin-bottom:14px;">
+      <h3 style="margin-top:0;">&#x1F916; Ask Scout <span id="copilotLeft" class="dim" style="font-size:12px;"></span></h3>
+      <div id="copilotMsgs" style="max-height:240px; overflow-y:auto; margin-bottom:8px;"></div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <input id="copilotInput" placeholder="Which leads should I call first?" style="flex:1; min-width:180px;" onkeydown="if(event.key==='Enter')copilotAsk()" />
+        <button onclick="copilotAsk()">Ask</button>
+        <button class="ghost" onclick="copilotPrioritize()">&#x26A1; Prioritize my leads</button>
+      </div>
+      <p class="dim" style="font-size:12px; margin:8px 0 0;">Scout only knows your scanned leads — it never guesses addresses or damage.</p>
+    </div>
     <div id="leadsList"></div>
   </div>
 
@@ -586,6 +596,70 @@
         if (j.status === 'error') throw new Error(j.error || "Scan failed");
       }
       throw new Error("Scan timed out — try again.");
+    }
+
+    /* ---------- Scout copilot ---------- */
+    function copilotAddMsg(who, text) {
+      const box = $('copilotMsgs');
+      const d = document.createElement('div');
+      d.style.cssText = 'margin:6px 0; font-size:13.5px; line-height:1.5;';
+      d.innerHTML = '<b>' + esc(who) + ':</b> ' + esc(text).replace(/\n/g, '<br>');
+      box.appendChild(d);
+      box.scrollTop = box.scrollHeight;
+    }
+    function copilotSetLeft(n) {
+      if (n === undefined || n === null) return;
+      $('copilotLeft').textContent = n < 0 ? '\u00B7 unlimited' : `\u00B7 ${n} question${n === 1 ? '' : 's'} left today`;
+    }
+    function copilotThinking(on) {
+      let t = $('copilotThinking');
+      if (on && !t) {
+        t = document.createElement('div');
+        t.id = 'copilotThinking';
+        t.style.cssText = 'margin:6px 0; font-size:13.5px; color:#64748b;';
+        t.textContent = 'Scout is thinking\u2026';
+        $('copilotMsgs').appendChild(t);
+        $('copilotMsgs').scrollTop = $('copilotMsgs').scrollHeight;
+      } else if (!on && t) t.remove();
+    }
+    async function copilotCall(url, body) {
+      const res = await fetch(url, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body || {})
+      });
+      const d = await res.json();
+      if (d.error === 'login_required') { showAuth(); return null; }
+      if (d.error === 'verify_email') {
+        showVerifyNotice(currentUser ? currentUser.email : '');
+        return null;
+      }
+      if (d.error === 'copilot_exhausted' || res.status === 429) {
+        copilotAddMsg('Scout', "You've used today's questions — they reset tomorrow.");
+        copilotSetLeft(0);
+        return null;
+      }
+      if (!d.ok) { copilotAddMsg('Scout', 'Hmm: ' + (d.error || 'something went wrong.')); return null; }
+      copilotSetLeft(d.questions_left);
+      return d.reply;
+    }
+    async function copilotAsk() {
+      const inp = $('copilotInput');
+      const q = inp.value.trim();
+      if (!q) return;
+      inp.value = '';
+      copilotAddMsg('You', q);
+      copilotThinking(true);
+      try {
+        const reply = await copilotCall('/api/copilot/ask', { message: q });
+        if (reply) copilotAddMsg('Scout', reply);
+      } finally { copilotThinking(false); }
+    }
+    async function copilotPrioritize() {
+      copilotThinking(true);
+      try {
+        const reply = await copilotCall('/api/copilot/prioritize', {});
+        if (reply) copilotAddMsg('Scout', reply);
+      } finally { copilotThinking(false); }
     }
 
     /* ---------- pin-drop picker (manual roof chooser) ---------- */

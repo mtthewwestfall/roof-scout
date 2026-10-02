@@ -1054,6 +1054,30 @@ def _gemini_json(api_key: str, parts: list[dict], schema: dict,
         return None
 
 
+def _gemini_text(api_key: str, system_text: str, user_text: str,
+                 max_tokens: int = 800) -> str | None:
+    """Single Gemini text chat call with a system instruction (or None)."""
+    payload = {
+        "system_instruction": {"parts": [{"text": system_text}]},
+        "contents": [{"parts": [{"text": user_text}]}],
+        "generationConfig": {
+            "temperature": 0.4, "maxOutputTokens": max_tokens,
+        },
+    }
+    req = urllib.request.Request(
+        _GEMINI_URL, data=json.dumps(payload).encode(), method="POST",
+        headers={"Content-Type": "application/json", "x-goog-api-key": api_key})
+    try:
+        with urllib.request.urlopen(req, timeout=90) as resp:
+            data = json.loads(resp.read().decode())
+        cands = data.get("candidates") or []
+        txt = "".join(p.get("text", "") for p in
+                      cands[0]["content"]["parts"] if p.get("text")).strip()
+        return txt or None
+    except Exception:
+        return None
+
+
 PINPOINT_PROMPT = """You are a senior forensic roof inspector. This {view} shows ONE roof, centered in the frame, graded {grade}/5 on the Roof Tru Scale ({verdict}). Wide-view evidence: {evidence}
 
 Do two things and return ONLY JSON:
