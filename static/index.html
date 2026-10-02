@@ -630,8 +630,9 @@
           <p style="font-size:13px; margin:10px 0 4px;">Drag the pin onto the exact rooftop, then scan:</p>
           <p style="margin:0 0 4px;"><b id="pinCoords"></b></p>
           <p id="pinMsg" style="color:#dc2626; font-size:13px; min-height:18px; margin:0 0 8px;"></p>
-          <div style="display:flex; gap:8px;">
+          <div style="display:flex; gap:8px; flex-wrap:wrap;">
             <button onclick="scanFromPin()">Scan this roof</button>
+            <button class="ghost" onclick="openPinStreetView()">Street View</button>
             <button class="ghost" onclick="closePinPicker()">Cancel</button>
           </div>
         </div>`;
@@ -643,6 +644,12 @@
       pinMap.on('click', (e) => { pinMarker.setLatLng(e.latlng); updatePinReadout(); });
       setTimeout(() => pinMap.invalidateSize(), 60);
       updatePinReadout();
+    }
+    function openPinStreetView() {
+      if (!pinMarker) return;
+      const p = pinMarker.getLatLng();
+      window.open('https://www.google.com/maps/@?api=1&map_action=pano&viewpoint='
+        + p.lat.toFixed(5) + ',' + p.lng.toFixed(5), '_blank');
     }
     function updatePinReadout() {
       if (!pinMarker) return;

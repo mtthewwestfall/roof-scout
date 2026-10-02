@@ -1149,6 +1149,23 @@ def start_scan():
         house = pipeline.geocode_latlng(lat, lng)
     else:
         house = pipeline.geocode_address(raw)
+        # House-number mismatch: the geocoder returned a different number
+        # than requested (e.g. asked 2349, got 2111). Don't silently scan
+        # the wrong house — send the user to the pin picker instead.
+        if house:
+            want_num = re.match(r"\s*(\d+)", raw)
+            got_num = re.match(r"\s*(\d+)", house.get("address", ""))
+            if (want_num and got_num
+                    and want_num.group(1) != got_num.group(1)):
+                return jsonify({
+                    "ok": False,
+                    "error":
+                        f"We found {house['address']} but couldn't locate "
+                        f"{want_num.group(1)} on that street. Drag the pin "
+                        f"onto the right rooftop — or check Street View "
+                        f"to find it visually.",
+                    "place": {"lat": house["lat"], "lng": house["lng"],
+                              "label": house["address"]}}), 400
     if not house:
         place = None
         try:
