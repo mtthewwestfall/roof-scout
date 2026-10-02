@@ -1316,29 +1316,28 @@ def _send_scan_complete_email(job_id: str, job: dict):
         pass
 
 
-# Automatic widening: when a scan's prescreen finds no visibly damaged
-# roofs, the scan widens by itself instead of stopping. Each extra round
-# excludes every roof already micro-scanned and sweeps farther out (the
-# grid fallback reaches ~8.8km). Bounded so one scan can't burn unlimited
-# triage budget.
+# Automatic widening: when a scan finds no damaged roofs, it widens by
+# itself instead of stopping. Each extra round excludes every roof already
+# checked and sweeps farther out (the grid fallback reaches ~8.8km).
+# Bounded so one scan can't burn unlimited budget: _WIDEN_ROUNDS caps the
+# prescreen→deep-grade cycles per scan.
 _WIDEN_ROUNDS = 3
 
 
-def _widened_prescreen(zipcode, center, count, user_id, progress,
-                       grader=None, prescreener=None):
-    """Candidate pool + damage prescreen, widening automatically.
+def _do_widened_scan(job_id, zipcode, center, count, user_id, progress,
+                     area, cache, grader=None, prescreener=None):
+    """Area scan with automatic widening. Loops prescreen -> deep grade;
+    whenever a round yields no leads, the next round excludes everything
+    already checked and sweeps farther out.
 
-    Returns (picks, triaged_all, footprints_ok):
-      picks         houses for the deep grade (damaged-first). [] when no
-                    round found anything worth deep-grading.
-      triaged_all   every candidate micro-scanned across all rounds — the
-                    seen-rotation records these so the next scan starts
-                    even farther out.
-      footprints_ok False only if the building lookup failed every round.
+    Returns True when leads were found. Records every checked roof as seen
+    so the next scan starts even farther out. Refunds the scan when no
+    round produced leads (no charge for no leads).
     """
     exclude = _seen_cells(user_id, zipcode)
     triaged_all: list[dict] = []
     footprints_ok = True
+    found = False
     for rnd in range(_WIDEN_ROUNDS):
         cands, fok = pipeline.candidate_roofs(
             zipcode, center, count, progress, exclude_cells=exclude)
@@ -1349,28 +1348,61 @@ def _widened_prescreen(zipcode, center, count, user_id, progress,
                 zipcode, center, count, progress)
             exclude = set()
         footprints_ok = footprints_ok and fok
+        _set_job(job_id, footprints_ok=footprints_ok)
         if not cands:
-            return [], triaged_all, footprints_ok
+            break
         if GEMINI_KEY or grader or prescreener:
             picks = pipeline.prescreen_damage(GEMINI_KEY, cands, count,
                                               progress,
                                               prescreener=prescreener)
         else:
             # Local dev without a grader: no damage signal, so nothing to
-            # widen on — keep today's stride behavior.
-            return (pipeline._stride_fallback(cands, count),
-                    [c for c in cands if "micro_score" in c],
-                    footprints_ok)
+            # widen on — one stride round, as today.
+            picks = pipeline._stride_fallback(cands, count)
+            for h in picks:
+                h["key"] = ((h.get("address") or "") + "|"
+                            + h.get("postcode", ""))
+            _run_houses(job_id, picks, area, cache=cache, grader=grader,
+                        user_id=user_id, footprints_ok=footprints_ok)
+            found = bool(_jobs.get(job_id, {}).get("leads"))
+            break
         triaged = [c for c in cands if "micro_score" in c]
         triaged_all.extend(triaged)
         exclude |= {pipeline._cell_of(c["lat"], c["lng"]) for c in triaged}
         damaged = sum(1 for c in triaged if c.get("micro_score", 0) >= 3)
-        if damaged:
-            return picks, triaged_all, footprints_ok
+        if not damaged and triaged:
+            # Nothing visibly damaged here — widen the prescreen without
+            # spending deep-grade calls on healthy roofs.
+            if rnd < _WIDEN_ROUNDS - 1 and progress:
+                progress("prescreen", 0, 1,
+                         "No damaged roofs in this area — "
+                         "widening the search…")
+            continue
+        for h in picks:
+            h["key"] = (h.get("address") or "") + "|" + h.get("postcode", "")
+        _run_houses(job_id, picks, area, cache=cache, grader=grader,
+                    user_id=user_id, footprints_ok=footprints_ok)
+        if _jobs.get(job_id, {}).get("leads"):
+            found = True
+            break
         if rnd < _WIDEN_ROUNDS - 1 and progress:
             progress("prescreen", 0, 1,
-                     "No damaged roofs in this area — widening the search…")
-    return [], triaged_all, footprints_ok
+                     "No damaged roofs confirmed — widening the search…")
+    if triaged_all:
+        _record_seen(user_id, zipcode, triaged_all)
+    if not found:
+        owner = (_jobs.get(job_id, {}) or {}).get("owner")
+        _refund_user_scan(owner)
+        if triaged_all:
+            _set_job(job_id, status="done", leads=[], area=area,
+                     msg=f"Done — no visibly damaged roofs found after "
+                         f"checking {len(triaged_all)} roofs across the "
+                         f"widened area. "
+                         f"No charge — your scan was refunded.")
+        else:
+            _fail_job(job_id, "No addresses found near that area. "
+                              "Try another. Your scan was refunded.")
+    return found
 
 
 def _run_houses(job_id: str, houses: list[dict], area: str,
@@ -1438,20 +1470,10 @@ def _run_houses(job_id: str, houses: list[dict], area: str,
                 h["needs_review"] = True
                 h["review_reason"] = "; ".join(reasons)
         if not houses:
-            # No leads, no charge: the deep evaluation found nothing
-            # damaged, so the scan credit goes back to the customer.
-            owner = user_id
-            if not owner:
-                with _jobs_lock:
-                    job = _jobs.get(job_id)
-                    if job:
-                        owner = job.get("owner")
-            _refund_user_scan(owner)
             _set_job(job_id, status="done", leads=[], area=area,
                      evaluated=evaluated,
                      msg=f"Done — no visibly damaged roofs found among the "
                          f"{evaluated} properties evaluated. "
-                         f"No charge — your scan was refunded. "
                          f"Try another area.")
             return
 
@@ -1505,34 +1527,11 @@ def _run_scan(job_id: str, zipcode: str, count: int, user_id=None,
         _set_job(job_id, area=center[2])
 
         # Rotation: skip roofs already shown to this customer; when every
-        # known candidate has been shown, start a fresh pass. The prescreen
-        # widens by itself when an area shows no damaged roofs.
-        houses, triaged_all, footprints_ok = _widened_prescreen(
-            zipcode, center, count, user_id, progress,
-            grader=grader, prescreener=prescreener)
-        _set_job(job_id, footprints_ok=footprints_ok)
-        if not houses:
-            # Every micro-scanned roof counts as seen, lead or not, so the
-            # next scan of this ZIP triages roofs farther out.
-            if triaged_all:
-                _record_seen(user_id, zipcode, triaged_all)
-                _fail_job(job_id,
-                          f"No damaged roofs found after checking "
-                          f"{len(triaged_all)} roofs across the widened "
-                          f"area. Your scan was refunded.")
-            else:
-                _fail_job(job_id, "No addresses found near that zip."
-                                  " Try another. Your scan was refunded.")
-            return
-        for h in houses:
-            h["key"] = (h.get("address") or "") + "|" + h.get("postcode", "")
-        _run_houses(job_id, houses, center[2], cache=(zipcode, count),
-                    grader=grader, user_id=user_id,
-                    footprints_ok=footprints_ok)
-        with _jobs_lock:
-            ok = _jobs[job_id].get("status") == "done"
-        if ok:
-            _record_seen(user_id, zipcode, triaged_all)
+        # known candidate has been shown, start a fresh pass. The scan
+        # widens by itself whenever a round yields no leads.
+        _do_widened_scan(job_id, zipcode, center, count, user_id, progress,
+                         center[2], cache=(zipcode, count),
+                         grader=grader, prescreener=prescreener)
     except Exception as e:
         _fail_job(job_id, f"Scan failed: {e}. Your scan was refunded.")
 
@@ -1561,34 +1560,11 @@ def _run_pin_scan(job_id: str, lat: float, lng: float, count: int,
         _set_job(job_id, area=area)
 
         # Rotation: skip roofs already shown to this customer; when every
-        # known candidate has been shown, start a fresh pass. The prescreen
-        # widens by itself when an area shows no damaged roofs.
-        houses, triaged_all, footprints_ok = _widened_prescreen(
-            zipcode, center, count, user_id, progress,
-            grader=grader, prescreener=prescreener)
-        _set_job(job_id, footprints_ok=footprints_ok)
-        if not houses:
-            # Every micro-scanned roof counts as seen, lead or not, so the
-            # next scan near here triages roofs farther out.
-            if triaged_all:
-                _record_seen(user_id, zipcode, triaged_all)
-                _fail_job(job_id,
-                          f"No damaged roofs found after checking "
-                          f"{len(triaged_all)} roofs across the widened "
-                          f"area. Your scan was refunded.")
-            else:
-                _fail_job(job_id, "No addresses found near that pin."
-                                  " Try another spot. Your scan was refunded.")
-            return
-        for h in houses:
-            h["key"] = (h.get("address") or "") + "|" + h.get("postcode", "")
-        _run_houses(job_id, houses, area, cache=None,
-                    grader=grader, user_id=user_id,
-                    footprints_ok=footprints_ok)
-        with _jobs_lock:
-            ok = _jobs[job_id].get("status") == "done"
-        if ok:
-            _record_seen(user_id, zipcode, triaged_all)
+        # known candidate has been shown, start a fresh pass. The scan
+        # widens by itself whenever a round yields no leads.
+        _do_widened_scan(job_id, zipcode, center, count, user_id, progress,
+                         area, cache=None,
+                         grader=grader, prescreener=prescreener)
     except Exception as e:
         _fail_job(job_id, f"Scan failed: {e}. Your scan was refunded.")
 
@@ -1601,6 +1577,17 @@ def _run_address_scan(job_id: str, house: dict, grader=None):
         _set_job(job_id, phase="ziplookup",
                  msg=f"Located {house['address']}…", area=area)
         _run_houses(job_id, [house], area, cache=None, grader=grader)
+        # No leads, no charge — same policy as area scans.
+        if not (_jobs.get(job_id, {}) or {}).get("leads"):
+            owner = (_jobs.get(job_id, {}) or {}).get("owner")
+            _refund_user_scan(owner)
+            with _jobs_lock:
+                job = _jobs.get(job_id)
+                if job and job.get("status") == "done":
+                    msg = job.get("msg", "")
+                    if "refunded" not in msg.lower():
+                        job["msg"] = (msg + " No charge — your scan was "
+                                      "refunded.")
     except Exception as e:
         _fail_job(job_id, f"Scan failed: {e}. Your scan was refunded.")
 

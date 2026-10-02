@@ -967,9 +967,10 @@ class TestRotation:
         server._jobs["j1"] = {"status": "running", "owner": "u1"}
         server._run_scan("j1", "12345", 20, user_id="u1",
                          prescreener=lambda b: [1] * len(b), grader=grader)
-        assert server._jobs["j1"]["status"] == "error"
-        assert "widened area" in server._jobs["j1"]["error"]
-        assert "refunded" in server._jobs["j1"]["error"]
+        assert server._jobs["j1"]["status"] == "done"
+        assert server._jobs["j1"]["leads"] == []
+        assert "widened area" in server._jobs["j1"]["msg"]
+        assert "refunded" in server._jobs["j1"]["msg"]
         assert len(server._seen_cells("u1", "12345")) == 300
 
     def test_widening_finds_damage_farther_out(self, db, monkeypatch):
@@ -1000,8 +1001,9 @@ class TestRotation:
 
     def test_zero_lead_deep_grade_refunds_scan(self, app_client, db,
                                                monkeypatch):
-        # Prescreen finds damage (no widening), but the deep grade calls
-        # every roof healthy: zero leads, zero charge.
+        # Prescreen finds damage every round, but the deep grade calls
+        # every roof healthy: the scan widens through all rounds, then
+        # zero leads, zero charge.
         r = signup(app_client, "nolead@x.com")
         assert r.status_code == 200
         conn = server._db()
@@ -1053,9 +1055,37 @@ class TestRotation:
         server._run_pin_scan("j1", 39.5, -80.1, 20, user_id="u1",
                              prescreener=lambda b: [1] * len(b),
                              grader=grader)
-        assert server._jobs["j1"]["status"] == "error"
-        assert "widened area" in server._jobs["j1"]["error"]
+        assert server._jobs["j1"]["status"] == "done"
+        assert server._jobs["j1"]["leads"] == []
+        assert "widened area" in server._jobs["j1"]["msg"]
+        assert "refunded" in server._jobs["j1"]["msg"]
         assert len(server._seen_cells("u1", "26554")) == 300
+
+    def test_deep_grade_zero_leads_widens(self, db, monkeypatch):
+        # Prescreen finds damage but the deep grade calls everything
+        # healthy: the scan widens and tries farther out instead of
+        # stopping. Round 2 finds real leads.
+        self._scan_env(monkeypatch, 300)
+        monkeypatch.setattr(pipeline, "street_second_opinion",
+                            lambda *a, **k: None)
+        graded = [0]
+
+        def grader(imgs):
+            graded[0] += len(imgs)
+            g = 4 if graded[0] <= 20 else 2
+            return [{"grade": g, "abandoned": False,
+                     "confidence": "high", "evidence": [],
+                     "material": "", "pitch": "",
+                     "obstruction": "", "damage_boxes": []}
+                    for _ in imgs]
+
+        server._jobs["j1"] = {"status": "running", "owner": "u1"}
+        server._run_scan("j1", "12345", 20, user_id="u1",
+                         prescreener=lambda b: [3] * len(b), grader=grader)
+        assert server._jobs["j1"]["status"] == "done"
+        assert len(server._jobs["j1"]["leads"]) == 20
+        # Both rounds' roofs count as seen.
+        assert len(server._seen_cells("u1", "12345")) == 300
 
     def test_lead_scan_records_every_triaged_roof(self, db, monkeypatch):
         self._scan_env(monkeypatch, 250)
