@@ -670,6 +670,156 @@ def lead_streetview(lead_key):
                                mimetype="image/jpeg")
 
 
+# ---------------- USPS address validation ----------------
+
+USPS_CLIENT_ID = os.environ.get("USPS_CLIENT_ID", "")
+USPS_CLIENT_SECRET = os.environ.get("USPS_CLIENT_SECRET", "")
+USPS_BASE = "https://apis.usps.com"
+_usps_token_cache = {"value": "", "expires": 0.0}
+_usps_lock = threading.Lock()
+
+
+def _usps_configured() -> bool:
+    return bool(USPS_CLIENT_ID and USPS_CLIENT_SECRET)
+
+
+def _usps_token() -> str | None:
+    """OAuth client-credentials token, cached until near expiry."""
+    with _usps_lock:
+        if _usps_token_cache["value"] and \
+                time.time() < _usps_token_cache["expires"] - 60:
+            return _usps_token_cache["value"]
+    body = urllib.parse.urlencode({
+        "grant_type": "client_credentials",
+        "client_id": USPS_CLIENT_ID,
+        "client_secret": USPS_CLIENT_SECRET}).encode()
+    req = urllib.request.Request(
+        f"{USPS_BASE}/oauth2/v3/token", data=body,
+        headers={"Content-Type": "application/x-www-form-urlencoded",
+                 "User-Agent": "RoofScout/1.0"})
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        data = json.loads(resp.read())
+    token = data.get("access_token", "")
+    if not token:
+        return None
+    try:
+        expires_in = int(data.get("expires_in") or 3600)
+    except (TypeError, ValueError):
+        expires_in = 3600
+    with _usps_lock:
+        _usps_token_cache["value"] = token
+        _usps_token_cache["expires"] = time.time() + expires_in
+    return token
+
+
+def _usps_validate(street: str, city: str, state: str,
+                   zipcode: str) -> dict | None:
+    """Standardize one address via the USPS Addresses API v3.
+    Returns the parsed AddressValidateResponse, or None on transport/
+    auth failure (the caller keeps the free-source address then)."""
+    token = _usps_token()
+    if not token:
+        return None
+    params = {"streetAddress": street, "city": city, "state": state}
+    if zipcode:
+        params["ZIPCode"] = zipcode
+    url = f"{USPS_BASE}/addresses/v3/address?" + urllib.parse.urlencode(params)
+    req = urllib.request.Request(
+        url, headers={"Authorization": f"Bearer {token}",
+                      "User-Agent": "RoofScout/1.0"})
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        return json.loads(resp.read())
+
+
+def _usps_cache_key(street: str, city: str, state: str, zipcode: str) -> str:
+    base = "|".join(x.strip().lower()
+                    for x in (street, city, state, zipcode))
+    return hashlib.sha256(base.encode()).hexdigest()[:24]
+
+
+def _apply_usps_result(h: dict, res: dict):
+    """Fold a USPS validation response into a lead.
+
+    DPV-confirmed deliverable -> the address is standardized, ZIP+4 is
+    attached, and even an estimated guess is promoted to verified.
+    Not deliverable / vacant -> the lead goes to the review flow instead
+    of a dead mailbox. Anything inconclusive leaves the free-source
+    address untouched."""
+    addr = res.get("address") or {}
+    info = res.get("additionalInfo") or {}
+    street = addr.get("streetAddress", "")
+    if not street:
+        return
+    dpv = str(info.get("DPVConfirmation") or "").upper()
+    nostat = str(info.get("DPVNostatReasonCode") or "")
+    h["address"] = street
+    h["city"] = addr.get("city") or h.get("city", "")
+    h["state"] = addr.get("state") or h.get("state", "")
+    h["postcode"] = addr.get("ZIPCode") or h.get("postcode", "")
+    if addr.get("ZIPPlus4"):
+        h["zip4"] = addr["ZIPPlus4"]
+    h["usps_dpv"] = dpv
+    if dpv == "Y":
+        h["address_confidence"] = "verified"
+        h["address_source"] = "usps"
+    elif dpv == "N" or nostat == "5":
+        reason = "USPS: address not confirmed deliverable" + \
+            (" (vacant)" if nostat == "5" else "")
+        if h.get("needs_review") and h.get("review_reason"):
+            h["review_reason"] = h["review_reason"] + "; " + reason
+        else:
+            h["needs_review"] = True
+            h["review_reason"] = reason
+
+
+def _usps_enhance_leads(houses: list[dict], progress=None):
+    """Validate lead addresses against USPS when credentials are set.
+
+    Runs after the free geocoders in the scan pipeline. Results are
+    cached per address so repeat scans don't re-bill. Any USPS hiccup
+    leaves the free-source address exactly as it was — validation is
+    strictly additive, never destructive."""
+    if not _usps_configured():
+        return
+    conn = _db()
+    try:
+        conn.execute("CREATE TABLE IF NOT EXISTS usps_validated ("
+                     "key TEXT PRIMARY KEY, result TEXT NOT NULL,"
+                     " created_at REAL NOT NULL)")
+        targets = [h for h in houses
+                   if h.get("grade") in (1, 2, 3) and h.get("address")]
+        total = len(targets)
+        for i, h in enumerate(targets):
+            if progress:
+                progress("usps", i, total,
+                         f"Validating addresses… {i}/{total}")
+            key = _usps_cache_key(h.get("address", ""), h.get("city", ""),
+                                  h.get("state", ""), h.get("postcode", ""))
+            row = conn.execute("SELECT result FROM usps_validated WHERE key=?",
+                               (key,)).fetchone()
+            if row:
+                try:
+                    res = json.loads(row[0])
+                except Exception:
+                    continue
+            else:
+                try:
+                    res = _usps_validate(h["address"], h.get("city", ""),
+                                         h.get("state", ""),
+                                         h.get("postcode", "")) or {}
+                except Exception:
+                    continue
+                conn.execute("INSERT OR REPLACE INTO usps_validated"
+                             " (key, result, created_at) VALUES (?,?,?)",
+                             (key, json.dumps(res), time.time()))
+                conn.commit()
+            _apply_usps_result(h, res)
+        if progress:
+            progress("usps", total, total, "Address validation done.")
+    finally:
+        conn.close()
+
+
 # ---------------- auth ----------------
 
 def _hash_pw(password: str, salt: str) -> str:
@@ -1155,6 +1305,9 @@ def _run_houses(job_id: str, houses: list[dict], area: str,
             pipeline.localize_damage(GEMINI_KEY, houses, progress)
         # Roof-first matching: damaged roofs get mailable street addresses.
         pipeline.attach_addresses(houses, progress)
+        # USPS validation (optional): standardize deliverable addresses,
+        # flag dead/vacant ones for review. No-op without credentials.
+        _usps_enhance_leads(houses, progress)
 
         for h in houses:
             b64 = h.pop("image_b64", None)

@@ -2159,3 +2159,140 @@ class TestLeadStreetview:
         signup(app_client, "sv5@t.com")
         r = app_client.get("/api/leads/../../etc/streetview")
         assert r.status_code == 404
+
+
+# ---------------- USPS address validation ----------------
+
+class TestUSPS:
+    def _resp(self, street="123 MAIN ST", dpv="Y", nostat="",
+              zip4="26554-1234"):
+        return {"address": {"streetAddress": street, "city": "Fairmont",
+                            "state": "WV", "ZIPCode": "26554",
+                            "ZIPPlus4": zip4},
+                "additionalInfo": {"DPVConfirmation": dpv,
+                                   "DPVNostatReasonCode": nostat}}
+
+    def _house(self, address="123 Main St"):
+        return {"grade": 2, "lat": 39.48, "lng": -80.19, "address": address,
+                "city": "Fairmont", "state": "WV", "postcode": "26554",
+                "address_confidence": "estimated",
+                "address_source": "nominatim"}
+
+    def _cfg(self, monkeypatch):
+        monkeypatch.setattr(server, "USPS_CLIENT_ID", "id")
+        monkeypatch.setattr(server, "USPS_CLIENT_SECRET", "secret")
+
+    def test_not_configured_is_noop(self, db, monkeypatch):
+        monkeypatch.setattr(server, "USPS_CLIENT_ID", "")
+        monkeypatch.setattr(server, "USPS_CLIENT_SECRET", "")
+        h = self._house()
+        server._usps_enhance_leads([h])
+        assert h["address"] == "123 Main St"
+        assert h["address_confidence"] == "estimated"
+
+    def test_dpv_confirmed_standardizes(self, db, monkeypatch):
+        self._cfg(monkeypatch)
+        monkeypatch.setattr(server, "_usps_validate",
+                            lambda *a: self._resp())
+        h = self._house()
+        server._usps_enhance_leads([h])
+        assert h["address"] == "123 MAIN ST"
+        assert h["address_confidence"] == "verified"
+        assert h["address_source"] == "usps"
+        assert h["zip4"] == "26554-1234"
+        assert not h.get("needs_review")
+
+    def test_dpv_not_confirmed_flags_review(self, db, monkeypatch):
+        self._cfg(monkeypatch)
+        monkeypatch.setattr(server, "_usps_validate",
+                            lambda *a: self._resp(dpv="N"))
+        h = self._house()
+        server._usps_enhance_leads([h])
+        assert h["address"] == "123 MAIN ST"  # still standardized
+        assert h.get("needs_review")
+        assert "not confirmed deliverable" in h["review_reason"]
+        assert h["address_confidence"] == "estimated"  # not promoted
+
+    def test_vacant_flags_review(self, db, monkeypatch):
+        self._cfg(monkeypatch)
+        monkeypatch.setattr(server, "_usps_validate",
+                            lambda *a: self._resp(dpv="N", nostat="5"))
+        h = self._house()
+        server._usps_enhance_leads([h])
+        assert h.get("needs_review")
+        assert "(vacant)" in h["review_reason"]
+
+    def test_existing_review_reason_appended(self, db, monkeypatch):
+        self._cfg(monkeypatch)
+        monkeypatch.setattr(server, "_usps_validate",
+                            lambda *a: self._resp(dpv="N"))
+        h = self._house()
+        h["needs_review"] = True
+        h["review_reason"] = "Map records mark this building vacant/abandoned"
+        server._usps_enhance_leads([h])
+        assert "vacant/abandoned" in h["review_reason"]
+        assert "USPS" in h["review_reason"]
+
+    def test_usps_error_keeps_free_address(self, db, monkeypatch):
+        self._cfg(monkeypatch)
+
+        def boom(*a):
+            raise Exception("usps down")
+
+        monkeypatch.setattr(server, "_usps_validate", boom)
+        h = self._house()
+        server._usps_enhance_leads([h])
+        assert h["address"] == "123 Main St"
+        assert not h.get("needs_review")
+
+    def test_empty_response_keeps_free_address(self, db, monkeypatch):
+        self._cfg(monkeypatch)
+        monkeypatch.setattr(server, "_usps_validate",
+                            lambda *a: {"address": {}})
+        h = self._house()
+        server._usps_enhance_leads([h])
+        assert h["address"] == "123 Main St"
+        assert not h.get("needs_review")
+
+    def test_result_cached_per_address(self, db, monkeypatch):
+        self._cfg(monkeypatch)
+        calls = []
+
+        def fake(*a):
+            calls.append(1)
+            return self._resp()
+
+        monkeypatch.setattr(server, "_usps_validate", fake)
+        server._usps_enhance_leads([self._house()])
+        server._usps_enhance_leads([self._house()])
+        assert len(calls) == 1
+
+    def test_token_cached_until_expiry(self, db, monkeypatch):
+        self._cfg(monkeypatch)
+
+        class FakeResp:
+            def __init__(self, data):
+                self._data = data
+
+            def read(self):
+                return self._data
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        calls = []
+
+        def fake_urlopen(req, timeout=20):
+            calls.append(1)
+            return FakeResp(json.dumps({"access_token": "tok123",
+                                        "expires_in": 3600}).encode())
+
+        monkeypatch.setattr(server.urllib.request, "urlopen", fake_urlopen)
+        server._usps_token_cache["value"] = ""
+        server._usps_token_cache["expires"] = 0
+        assert server._usps_token() == "tok123"
+        assert server._usps_token() == "tok123"
+        assert len(calls) == 1
