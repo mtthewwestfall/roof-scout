@@ -124,6 +124,11 @@ def _db():
     conn.execute("""CREATE TABLE IF NOT EXISTS scans (
         zip TEXT NOT NULL, count INTEGER NOT NULL, payload TEXT NOT NULL,
         created_at REAL NOT NULL, PRIMARY KEY (zip, count))""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS scan_jobs (
+        job_id TEXT PRIMARY KEY, user_id TEXT NOT NULL,
+        status TEXT NOT NULL, leads TEXT NOT NULL DEFAULT '[]',
+        area TEXT NOT NULL DEFAULT '', msg TEXT NOT NULL DEFAULT '',
+        created_at REAL NOT NULL)""")
     conn.execute("""CREATE TABLE IF NOT EXISTS users (
         id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL,
         pw_hash TEXT NOT NULL, salt TEXT NOT NULL,
@@ -880,6 +885,25 @@ def _record_seen(user_id: str | None, zipcode: str, houses: list[dict]):
 def _set_job(job_id: str, **kw):
     with _jobs_lock:
         _jobs[job_id].update(kw)
+        job = dict(_jobs[job_id])
+    # Persist completed scans so leads survive refreshes and restarts.
+    if kw.get("status") == "done":
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            conn.execute(
+                "INSERT OR REPLACE INTO scan_jobs"
+                " (job_id, user_id, status, leads, area, msg, created_at)"
+                " VALUES (?, ?, 'done', ?, ?, ?, ?)",
+                (job_id, job.get("owner", ""), json.dumps(job.get("leads") or []),
+                 job.get("area", ""), job.get("msg", ""), time.time()))
+            conn.commit()
+        except Exception:
+            pass
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def _run_houses(job_id: str, houses: list[dict], area: str,
@@ -1184,7 +1208,24 @@ def scan_status(job_id: str):
     with _jobs_lock:
         job = _jobs.get(job_id)
     if not job:
-        return jsonify({"ok": False, "error": "unknown job"}), 404
+        # Fall back to persisted scans (survives refresh + restart).
+        conn = _db()
+        try:
+            row = conn.execute(
+                "SELECT user_id, leads, area, msg FROM scan_jobs WHERE job_id=?",
+                (job_id,)).fetchone()
+        finally:
+            conn.close()
+        if not row:
+            return jsonify({"ok": False, "error": "unknown job"}), 404
+        if not user.get("is_admin") and row[0] != user["id"]:
+            return jsonify({"ok": False, "error": "forbidden"}), 403
+        try:
+            leads = json.loads(row[1])
+        except Exception:
+            leads = []
+        job = {"status": "done", "leads": leads, "area": row[2],
+               "msg": row[3], "owner": row[0]}
     # Account-scoped: only the job's owner (or an admin) may read it.
     if not user.get("is_admin") and job.get("owner") != user["id"]:
         return jsonify({"ok": False, "error": "forbidden"}), 403

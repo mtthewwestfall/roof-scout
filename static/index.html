@@ -576,8 +576,20 @@
           throw new Error(data.error || "Search failed");
         }
         if (data.quota) setQuota(data.quota);
-        if (data.cached) { renderResults(data.payload.leads || [], data.payload.area); }
-        else { await pollJob(data.job_id); }
+        if (data.cached) {
+          try {
+            localStorage.setItem('rs_last_results', JSON.stringify({leads: data.payload.leads || [], area: data.payload.area}));
+            localStorage.removeItem('rs_last_job');
+          } catch (e) {}
+          renderResults(data.payload.leads || [], data.payload.area);
+        }
+        else {
+          try {
+            localStorage.setItem('rs_last_job', data.job_id);
+            localStorage.removeItem('rs_last_results');
+          } catch (e) {}
+          await pollJob(data.job_id);
+        }
       } catch (err) {
         sidebar.innerHTML = `<div style="color:#dc2626; padding: 20px;"><b>Error:</b> ${esc(err.message)}</div>`;
       } finally {
@@ -915,6 +927,23 @@
     function showAuth() { $('authOverlay').classList.remove('hidden'); }
     function hideAuth() { $('authOverlay').classList.add('hidden'); }
 
+    async function restoreLastScan() {
+      try {
+        const jobId = localStorage.getItem('rs_last_job');
+        if (jobId) {
+          const res = await fetch('/api/scan/' + encodeURIComponent(jobId));
+          const j = await res.json().catch(() => ({}));
+          if (j.ok && j.status === 'done') { renderResults(j.leads || [], j.area); return; }
+          if (j.ok && (j.status === 'running' || j.status === 'queued')) { pollJob(jobId); return; }
+          localStorage.removeItem('rs_last_job');
+        }
+        const raw = localStorage.getItem('rs_last_results');
+        if (raw) {
+          const r = JSON.parse(raw);
+          if (r && r.leads) renderResults(r.leads || [], r.area);
+        }
+      } catch (e) { /* restore is best-effort */ }
+    }
     async function checkAuth() {
       try {
         const r = await fetch('/api/auth/me');
@@ -931,6 +960,7 @@
       $('userEmail').textContent = (u.company_name && u.account_type === 'company' ? u.company_name + ' · ' : '') + u.email;
       $('adminLink').classList.toggle('hidden', !u.is_admin);
       setQuota(u.quota);
+      restoreLastScan();
       try {
         if (u.account_type === 'company' && u.company_name) {
           const raw = localStorage.getItem('rs_company');
