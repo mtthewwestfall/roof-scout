@@ -753,6 +753,7 @@
         card.className = 'card' + (locked ? ' locked-card' : '');
         const mapsBtn = lead.maps_url ? `<a class="btn-link" href="${esc(lead.maps_url)}" target="_blank">Google Maps</a>` : '';
         const svBtn = lead.streetview_url ? `<a class="btn-link" href="${esc(lead.streetview_url)}" target="_blank">Street View</a>` : '';
+        const svAuto = (!locked && lead.lead_key) ? `<span class="sv-wrap"><img class="thumb" src="/api/leads/${esc(lead.lead_key)}/streetview" alt="Street-level view" loading="lazy" onerror="this.closest('.sv-wrap').remove()" /><div class="imgcap">Street-level view</div></span>` : '';
         const forSaleBadge = lead.for_sale
           ? `<span class="badge" style="background:rgba(29,78,216,.25);color:#93c5fd;border-color:rgba(147,197,253,.5);margin-left:6px;">🏷️ For sale</span>` : '';
         const reviewHtml = `
@@ -796,6 +797,7 @@
           <div class="imgcap">${imgCaption(lead)}</div>` : ''}
           ${lead.damage_img ? `<img class="thumb" src="${lead.damage_img}" alt="Damage close-up" loading="lazy" />
           <div class="imgcap">Damage close-up — problem areas marked (AI estimate, not an inspection)</div>` : ''}
+          ${svAuto}
 
           ${ev ? `<div class="section-title">Visual Evidence:</div><ul>${ev}</ul>` : ''}
           ${repairs ? `<div class="section-title">What needs done:</div><ul>${repairs}</ul>` : ''}

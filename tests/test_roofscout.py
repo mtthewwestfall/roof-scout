@@ -1980,3 +1980,182 @@ class TestAddressResolution:
         pipeline.attach_addresses(houses)
         assert calls == []
         assert all(h["address"] == "" for h in houses)
+
+
+# ---------------- Stripe webhook auto-fulfillment ----------------
+
+class TestStripeWebhook:
+    def _signed(self, event, secret, ts=None):
+        import hmac as _hmac
+        import hashlib as _hl
+        payload = json.dumps(event).encode()
+        t = str(int(time.time())) if ts is None else str(ts)
+        sig = _hmac.new(secret.encode(), f"{t}.".encode() + payload,
+                        _hl.sha256).hexdigest()
+        return payload, f"t={t},v1={sig}"
+
+    def _post(self, client, event, secret="whsec_test"):
+        payload, sig = self._signed(event, secret)
+        return client.post("/api/stripe/webhook", data=payload,
+                           headers={"Stripe-Signature": sig,
+                                    "Content-Type": "application/json"})
+
+    def test_bad_signature_rejected(self, app_client, db, monkeypatch):
+        monkeypatch.setattr(server, "STRIPE_WEBHOOK_SECRET", "whsec_test")
+        r = app_client.post("/api/stripe/webhook", data=b"{}",
+                            headers={"Stripe-Signature": "t=1,v1=deadbeef"})
+        assert r.status_code == 400
+
+    def test_tampered_payload_rejected(self, app_client, db, monkeypatch):
+        monkeypatch.setattr(server, "STRIPE_WEBHOOK_SECRET", "whsec_test")
+        event = {"id": "evt_x", "type": "checkout.session.completed",
+                 "data": {"object": {}}}
+        payload, sig = self._signed(event, "whsec_test")
+        r = app_client.post("/api/stripe/webhook",
+                            data=payload + b"tamper",
+                            headers={"Stripe-Signature": sig})
+        assert r.status_code == 400
+
+    def test_checkout_applies_plan_by_amount(self, app_client, db, monkeypatch):
+        monkeypatch.setattr(server, "STRIPE_WEBHOOK_SECRET", "whsec_test")
+        signup(app_client, "buyer@x.com")
+        event = {"id": "evt_ck1", "type": "checkout.session.completed",
+                 "data": {"object": {"payment_status": "paid",
+                    "customer_details": {"email": "buyer@x.com"},
+                    "amount_total": 4999, "customer": "cus_1", "metadata": {}}}}
+        r = self._post(app_client, event)
+        assert r.status_code == 200
+        assert quota_of(app_client)["plan"] == "starter"
+
+    def test_metadata_plan_wins_over_amount(self, app_client, db, monkeypatch):
+        monkeypatch.setattr(server, "STRIPE_WEBHOOK_SECRET", "whsec_test")
+        signup(app_client, "buyer2@x.com")
+        event = {"id": "evt_ck2", "type": "checkout.session.completed",
+                 "data": {"object": {"payment_status": "paid",
+                    "customer_details": {"email": "buyer2@x.com"},
+                    "amount_total": 4999, "customer": "cus_2",
+                    "metadata": {"plan": "pro"}}}}
+        r = self._post(app_client, event)
+        assert r.status_code == 200
+        assert quota_of(app_client)["plan"] == "pro"
+
+    def test_duplicate_event_idempotent(self, app_client, db, monkeypatch):
+        monkeypatch.setattr(server, "STRIPE_WEBHOOK_SECRET", "whsec_test")
+        signup(app_client, "buyer3@x.com")
+        event = {"id": "evt_dup", "type": "checkout.session.completed",
+                 "data": {"object": {"payment_status": "paid",
+                    "customer_details": {"email": "buyer3@x.com"},
+                    "amount_total": 9999, "metadata": {}}}}
+        assert self._post(app_client, event).status_code == 200
+        r = self._post(app_client, event)
+        assert r.get_json() == {"ok": True, "duplicate": True}
+
+    def test_unknown_email_goes_pending(self, app_client, db, monkeypatch):
+        monkeypatch.setattr(server, "STRIPE_WEBHOOK_SECRET", "whsec_test")
+        event = {"id": "evt_unk", "type": "checkout.session.completed",
+                 "data": {"object": {"payment_status": "paid",
+                    "customer_details": {"email": "ghost@x.com"},
+                    "amount_total": 4999, "metadata": {}}}}
+        r = self._post(app_client, event)
+        assert r.status_code == 200
+        conn = server._db()
+        try:
+            row = conn.execute("SELECT email, plan FROM stripe_pending"
+                               ).fetchone()
+        finally:
+            conn.close()
+        assert row == ("ghost@x.com", "starter")
+
+    def test_renewal_resets_cycle(self, app_client, db, monkeypatch):
+        monkeypatch.setattr(server, "STRIPE_WEBHOOK_SECRET", "whsec_test")
+        signup(app_client, "ren@x.com")
+        set_plan("ren@x.com", "starter", scans_used=3, unlocks_used=10)
+        event = {"id": "evt_ren", "type": "invoice.paid",
+                 "data": {"object": {"billing_reason": "subscription_cycle",
+                    "customer_email": "ren@x.com", "amount_due": 4999}}}
+        r = self._post(app_client, event)
+        assert r.status_code == 200
+        q = quota_of(app_client)
+        assert q["plan"] == "starter"
+        assert q["scans_used"] == 0 and q["unlocks_used"] == 0
+
+    def test_initial_invoice_not_double_applied(self, app_client, db,
+                                               monkeypatch):
+        monkeypatch.setattr(server, "STRIPE_WEBHOOK_SECRET", "whsec_test")
+        signup(app_client, "new@x.com")
+        event = {"id": "evt_ic", "type": "invoice.paid",
+                 "data": {"object": {"billing_reason": "subscription_create",
+                    "customer_email": "new@x.com", "amount_due": 4999}}}
+        r = self._post(app_client, event)
+        assert r.status_code == 200
+        assert quota_of(app_client)["plan"] == "trial"
+
+    def test_cancel_downgrades_to_trial(self, app_client, db, monkeypatch):
+        monkeypatch.setattr(server, "STRIPE_WEBHOOK_SECRET", "whsec_test")
+        signup(app_client, "cx@x.com")
+        ck = {"id": "evt_cx1", "type": "checkout.session.completed",
+              "data": {"object": {"payment_status": "paid",
+                 "customer_details": {"email": "cx@x.com"},
+                 "amount_total": 9999, "customer": "cus_9", "metadata": {}}}}
+        assert self._post(app_client, ck).status_code == 200
+        assert quota_of(app_client)["plan"] == "pro"
+        event = {"id": "evt_cx2", "type": "customer.subscription.deleted",
+                 "data": {"object": {"customer": "cus_9"}}}
+        r = self._post(app_client, event)
+        assert r.status_code == 200
+        assert quota_of(app_client)["plan"] == "trial"
+
+
+# ---------------- automatic Street View per listing ----------------
+
+class TestLeadStreetview:
+    def test_no_key_unavailable(self, app_client, db, monkeypatch):
+        monkeypatch.setattr(server, "GOOGLE_MAPS_API_KEY", "")
+        signup(app_client, "sv@t.com")
+        r = app_client.get("/api/leads/abcd1234abcd1234/streetview")
+        assert r.status_code == 404
+
+    def test_locked_lead_forbidden(self, app_client, db, monkeypatch):
+        monkeypatch.setattr(server, "GOOGLE_MAPS_API_KEY", "k")
+        signup(app_client, "sv2@t.com")
+        payload = seed_cache(leads=[mklead()])
+        key = server._lead_key(payload["leads"][0])
+        r = app_client.get(f"/api/leads/{key}/streetview")
+        assert r.status_code == 403
+
+    def test_unlocked_lead_served_and_cached(self, app_client, db, monkeypatch):
+        monkeypatch.setattr(server, "GOOGLE_MAPS_API_KEY", "k")
+        calls = []
+
+        def fake_fetch(lat, lng):
+            calls.append((lat, lng))
+            return b"J" * 5000
+
+        monkeypatch.setattr(server, "_sv_fetch", fake_fetch)
+        signup(app_client, "sv3@t.com")
+        payload = seed_cache(leads=[mklead()])
+        key = server._lead_key(payload["leads"][0])
+        app_client.post("/api/leads/unlock", json={"lead_key": key})
+        r = app_client.get(f"/api/leads/{key}/streetview")
+        assert r.status_code == 200
+        assert r.content_type == "image/jpeg"
+        assert len(calls) == 1
+        r = app_client.get(f"/api/leads/{key}/streetview")
+        assert r.status_code == 200
+        assert len(calls) == 1  # disk cache on the second hit
+
+    def test_no_imagery_404(self, app_client, db, monkeypatch):
+        monkeypatch.setattr(server, "GOOGLE_MAPS_API_KEY", "k")
+        monkeypatch.setattr(server, "_sv_fetch", lambda lat, lng: None)
+        signup(app_client, "sv4@t.com")
+        payload = seed_cache(leads=[mklead()])
+        key = server._lead_key(payload["leads"][0])
+        app_client.post("/api/leads/unlock", json={"lead_key": key})
+        r = app_client.get(f"/api/leads/{key}/streetview")
+        assert r.status_code == 404
+
+    def test_bad_key_format_404(self, app_client, db, monkeypatch):
+        monkeypatch.setattr(server, "GOOGLE_MAPS_API_KEY", "k")
+        signup(app_client, "sv5@t.com")
+        r = app_client.get("/api/leads/../../etc/streetview")
+        assert r.status_code == 404

@@ -202,8 +202,8 @@ def _db():
 
 PLANS = {
     "trial":   {"name": "Trial",   "scans": 1, "unlocks": 5,   "cycle_days": 0},
-    "starter": {"name": "Starter", "scans": 5, "unlocks": 25,  "cycle_days": 30},
-    "pro":     {"name": "Pro",     "scans": 20, "unlocks": 100, "cycle_days": 30},
+    "starter": {"name": "Starter", "scans": 2, "unlocks": 25,  "cycle_days": 30},
+    "pro":     {"name": "Pro",     "scans": 8, "unlocks": 100, "cycle_days": 30},
 }
 
 
@@ -484,6 +484,190 @@ def _find_lead(lead_key: str) -> dict | None:
         except Exception:
             continue
     return None
+
+
+# ---------------- Stripe webhook (automatic plan fulfillment) ----------------
+
+STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
+# Fallback mapping: Payment-Link amounts (cents) -> plan. Prefer setting
+# metadata plan=starter|pro on the Payment Link itself; amount is the backup.
+STRIPE_AMOUNT_PLANS = {4999: "starter", 9999: "pro"}
+
+
+def _stripe_sig_ok(payload: bytes, header: str, secret: str) -> bool:
+    """Verify a Stripe-Signature header (t=...,v1=...) with timestamp tolerance."""
+    try:
+        parts = dict(p.split("=", 1) for p in header.split(",") if "=" in p)
+        ts, sig = parts.get("t", ""), parts.get("v1", "")
+        if not ts or not sig:
+            return False
+        if abs(time.time() - int(ts)) > 300:
+            return False
+        expect = hmac.new(secret.encode(), f"{ts}.".encode() + payload,
+                          hashlib.sha256).hexdigest()
+        return hmac.compare_digest(expect, sig)
+    except Exception:
+        return False
+
+
+def _apply_plan_email(conn, email: str, plan: str) -> bool:
+    """Set a user's plan by email, resetting the billing cycle.
+    Shared by /admin and the Stripe webhook. Returns False when the
+    account does not exist."""
+    row = conn.execute("SELECT id FROM users WHERE email=?", (email,)).fetchone()
+    if not row:
+        return False
+    conn.execute("UPDATE users SET plan=?, cycle_scans_used=0,"
+                 " cycle_unlocks_used=0, period_start=? WHERE id=?",
+                 (plan, time.time(), row[0]))
+    conn.commit()
+    return True
+
+
+def _stripe_tables(conn):
+    conn.execute("CREATE TABLE IF NOT EXISTS stripe_events ("
+                 "event_id TEXT PRIMARY KEY, type TEXT NOT NULL,"
+                 " created_at REAL NOT NULL)")
+    conn.execute("CREATE TABLE IF NOT EXISTS stripe_pending ("
+                 "email TEXT NOT NULL, plan TEXT NOT NULL,"
+                 " event_id TEXT NOT NULL, created_at REAL NOT NULL)")
+    conn.execute("CREATE TABLE IF NOT EXISTS stripe_customers ("
+                 "customer_id TEXT PRIMARY KEY, email TEXT NOT NULL)")
+
+
+@app.post("/api/stripe/webhook")
+def stripe_webhook():
+    """Stripe -> Roof Scout automatic fulfillment.
+
+    Stripe dashboard setup: add endpoint
+    https://getveridatenow.com/api/stripe/webhook with events
+    checkout.session.completed, invoice.paid, customer.subscription.deleted,
+    and put the endpoint's signing secret in STRIPE_WEBHOOK_SECRET.
+    The payer's email is the identity key, matched to the Roof Scout account.
+    Set metadata plan=starter|pro on each Payment Link for explicit mapping
+    (amount_total is the fallback)."""
+    payload = request.get_data()
+    if not STRIPE_WEBHOOK_SECRET:
+        return jsonify({"ok": False, "error": "webhook_not_configured"}), 503
+    if not _stripe_sig_ok(payload, request.headers.get("Stripe-Signature", ""),
+                          STRIPE_WEBHOOK_SECRET):
+        return jsonify({"ok": False, "error": "bad_signature"}), 400
+    try:
+        event = json.loads(payload)
+    except Exception:
+        return jsonify({"ok": False, "error": "bad_json"}), 400
+    etype = event.get("type", "")
+    eid = event.get("id", "")
+    conn = _db()
+    try:
+        _stripe_tables(conn)
+        if eid and conn.execute("SELECT 1 FROM stripe_events WHERE event_id=?",
+                                (eid,)).fetchone():
+            return jsonify({"ok": True, "duplicate": True})
+        obj = (event.get("data") or {}).get("object") or {}
+        email, plan = "", ""
+        if etype == "checkout.session.completed":
+            if obj.get("payment_status") == "paid":
+                email = str(((obj.get("customer_details") or {}).get("email")
+                             or obj.get("customer_email") or "")).strip().lower()
+                plan = str((obj.get("metadata") or {}).get("plan", "")).lower()
+                if plan not in PLANS or plan == "trial":
+                    plan = STRIPE_AMOUNT_PLANS.get(obj.get("amount_total") or 0, "")
+                cust = obj.get("customer")
+                if cust and email:
+                    conn.execute("INSERT OR REPLACE INTO stripe_customers"
+                                 " (customer_id, email) VALUES (?,?)", (cust, email))
+        elif etype == "invoice.paid":
+            # Renewals only: the initial subscription_create invoice is already
+            # covered by checkout.session.completed above.
+            if obj.get("billing_reason") == "subscription_cycle":
+                email = str(obj.get("customer_email") or "").strip().lower()
+                plan = STRIPE_AMOUNT_PLANS.get(obj.get("amount_due") or 0, "")
+        elif etype == "customer.subscription.deleted":
+            cust = obj.get("customer", "")
+            row = conn.execute("SELECT email FROM stripe_customers WHERE"
+                               " customer_id=?", (cust,)).fetchone() if cust else None
+            if row:
+                email, plan = row[0], "trial"
+        if email and plan:
+            if _apply_plan_email(conn, email, plan):
+                print(f"[stripe] fulfilled {email} -> {plan} ({etype})")
+            else:
+                conn.execute("INSERT INTO stripe_pending"
+                             " (email, plan, event_id, created_at)"
+                             " VALUES (?,?,?,?)", (email, plan, eid, time.time()))
+                print(f"[stripe] payment for unknown account: {email} ->"
+                      f" {plan} ({eid})")
+        if eid:
+            conn.execute("INSERT OR IGNORE INTO stripe_events"
+                         " (event_id, type, created_at) VALUES (?,?,?)",
+                         (eid, etype, time.time()))
+        conn.commit()
+    finally:
+        conn.close()
+    return jsonify({"ok": True})
+
+
+# ---------------- automatic Street View per listing ----------------
+
+GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY", "")
+
+
+def _sv_cache_dir() -> str:
+    d = os.path.join(os.path.dirname(os.path.abspath(DB_PATH)), "svcache")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _sv_fetch(lat: float, lng: float) -> bytes | None:
+    """Fetch a Street View still from Google. None when unavailable."""
+    url = ("https://maps.googleapis.com/maps/api/streetview"
+           f"?size=640x480&location={lat},{lng}&key={GOOGLE_MAPS_API_KEY}")
+    req = urllib.request.Request(url, headers={"User-Agent": "RoofScout/1.0"})
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        data = resp.read()
+    # Google answers no-imagery with a tiny placeholder image.
+    return data if len(data) > 2000 else None
+
+
+@app.get("/api/leads/<lead_key>/streetview")
+def lead_streetview(lead_key):
+    """Proxied Google Street View still for an unlocked lead.
+
+    The API key never leaves the server. Locked leads (jittered coords,
+    masked addresses) get 403 so the real location can't leak."""
+    user, err = _require_verified()
+    if err:
+        return err
+    if not re.fullmatch(r"[0-9a-f]{16}", lead_key or ""):
+        return jsonify({"ok": False, "error": "bad_lead"}), 404
+    if not GOOGLE_MAPS_API_KEY:
+        return jsonify({"ok": False, "error": "streetview_unavailable"}), 404
+    conn = _db()
+    try:
+        ok = user["is_admin"] or conn.execute(
+            "SELECT 1 FROM unlocks WHERE user_id=? AND lead_key=?",
+            (user["id"], lead_key)).fetchone()
+    finally:
+        conn.close()
+    if not ok:
+        return jsonify({"ok": False, "error": "locked"}), 403
+    lead = _find_lead(lead_key)
+    lat, lng = (lead or {}).get("lat"), (lead or {}).get("lng")
+    if not lat or not lng:
+        return jsonify({"ok": False, "error": "no_location"}), 404
+    path = os.path.join(_sv_cache_dir(), f"{lead_key}.jpg")
+    if not os.path.exists(path):
+        try:
+            data = _sv_fetch(float(lat), float(lng))
+        except Exception:
+            data = None
+        if not data:
+            return jsonify({"ok": False, "error": "no_imagery"}), 404
+        with open(path, "wb") as f:
+            f.write(data)
+    return send_from_directory(_sv_cache_dir(), f"{lead_key}.jpg",
+                               mimetype="image/jpeg")
 
 
 # ---------------- auth ----------------
@@ -1581,9 +1765,18 @@ def admin_users():
                 "plan": r[4], "is_admin": bool(r[5]),
                 "created_at": r[6], "quota": q,
             })
+        try:
+            _stripe_tables(conn)
+            pending = [{"email": r[0], "plan": r[1], "event": r[2],
+                        "at": r[3]} for r in conn.execute(
+                "SELECT email, plan, event_id, created_at FROM stripe_pending"
+                " ORDER BY created_at DESC LIMIT 50").fetchall()]
+        except Exception:
+            pending = []
     finally:
         conn.close()
-    return jsonify({"ok": True, "users": users})
+    return jsonify({"ok": True, "users": users,
+                    "pending_payments": pending})
 
 
 @app.get("/admin")
@@ -1608,14 +1801,9 @@ def admin_set_plan():
                         "error": f"Plan must be one of: {', '.join(PLANS)}"}), 400
     conn = _db()
     try:
-        cur = conn.execute("SELECT id FROM users WHERE email=?", (email,))
-        row = cur.fetchone()
-        if not row:
+        _stripe_tables(conn)
+        if not _apply_plan_email(conn, email, plan):
             return jsonify({"ok": False, "error": "No such account."}), 404
-        conn.execute("UPDATE users SET plan=?, cycle_scans_used=0,"
-                     " cycle_unlocks_used=0, period_start=? WHERE id=?",
-                     (plan, time.time(), row[0]))
-        conn.commit()
     finally:
         conn.close()
     return jsonify({"ok": True, "email": email, "plan": plan})
