@@ -901,7 +901,7 @@ GRADE_PROMPT = """You are a senior forensic roof inspector grading residential r
 3 AGING — visible wear: patchy granule loss (shiny or mottled sheen), slight curling or lifting at edges, light moss or algae staining. Worth watching.
 2 WORN — needs repair soon: missing, cracked, or lifted shingles; heavy moss or algae coverage; rusted or lifting flashing; debris buildup or ponding.
 1 FAILING — needs replacement now: sagging or uneven roof deck, blue tarps, large bare or patched areas, collapsed sections, structural deformation.
-0 UNVERIFIABLE — the target roof cannot be assessed (heavy tree cover, deep shadow, mostly out of frame, too coarse). Never guess; use 0.
+0 UNVERIFIABLE — the target roof cannot be assessed (image too coarse to make out shingles, roof mostly out of frame, deep shadow, or tree canopy visibly covering the roof). Never guess; use 0. State the ACTUAL reason you cannot assess it — never default to tree cover.
 
 ABANDONED / DERELICT RULE: if the target property is clearly abandoned or derelict — collapsed or fire-gutted structure, boarded-up and decaying, or a vacant lot with no building at the target point — set "abandoned": true and grade 0. Do not mark a merely old or worn-but-occupied home as abandoned.
 
@@ -912,7 +912,7 @@ CRITICAL DISCRIMINATION RULES:
 2. Shadows: differentiate sharp tree-limb shadows from sagging or missing shingles. Check whether the dark shape matches a tree next to the house.
 3. Glare: high sun angles cause white reflective glare on metal or asphalt. Do not confuse glare with missing material.
 
-For each image also report: primary_material (asphalt shingle, metal, clay/concrete tile, slate, or membrane/flat), pitch_estimate (Flat, Low-slope, Medium, or Steep), obstruction_notes (tree cover, solar panels, shadows, glare — or empty if the view is clear), and damage_boxes — bounding boxes as [ymin, xmin, ymax, xmax] in 0-1000 normalized coordinates around each visible damage area (missing shingles, tarps, ponding, etc.), with a short label per box. For grades 1-2 include at least one damage_box around the worst-affected area. Omit damage_boxes for healthy roofs.
+For each image also report: primary_material (asphalt shingle, metal, clay/concrete tile, slate, or membrane/flat), pitch_estimate (Flat, Low-slope, Medium, or Steep), obstruction_notes — ONLY what is visibly blocking the target roof in THIS image (e.g. tree canopy over the roof, shadows, glare). If the roof is fully visible, use an empty string. NEVER write "tree cover" unless tree canopy is visibly covering part of the roof., and damage_boxes — bounding boxes as [ymin, xmin, ymax, xmax] in 0-1000 normalized coordinates around each visible damage area (missing shingles, tarps, ponding, etc.), with a short label per box. For grades 1-2 include at least one damage_box around the worst-affected area. Omit damage_boxes for healthy roofs.
 
 The images are in order. Return a JSON array with exactly one object per image, in order: {"grade": 0-5, "abandoned": true/false, "confidence": "low|medium|high", "evidence": ["up to 3 short visual observations"], "primary_material": "...", "pitch_estimate": "...", "obstruction_notes": "...", "damage_boxes": [{"box_2d": [ymin,xmin,ymax,xmax], "label": "..."}]}. Return ONLY the JSON array."""
 
@@ -1261,6 +1261,9 @@ def grade_roofs(api_key: str, houses: list[dict], progress=None,
     for h in houses:
         g = results.get(h["key"])
         if g:
+            # Normalize raw grader keys so the test hook and the production
+            # path behave identically downstream.
+            _normalize_grade_keys(g)
             h.update(g)
         else:
             h.update({"grade": 0, "abandoned": False, "confidence": "low",
@@ -1271,6 +1274,22 @@ def grade_roofs(api_key: str, houses: list[dict], progress=None,
         if v:
             h.update(v)
     return houses
+
+
+def _normalize_grade_keys(g: dict) -> None:
+    """Map raw grader keys to the canonical mapped names, in place.
+
+    The test grader hook returns raw model keys ("obstruction_notes") while
+    the production path maps them ("obstruction"). Normalize so a street
+    re-grade fully replaces the aerial values regardless of path."""
+    for raw, canon in (("primary_material", "material"),
+                       ("pitch_estimate", "pitch"),
+                       ("obstruction_notes", "obstruction")):
+        if raw in g:
+            if canon not in g:
+                g[canon] = g.pop(raw)
+            else:
+                g.pop(raw)
 
 
 def street_second_opinion(api_key: str, houses: list[dict], progress=None,
@@ -1320,11 +1339,21 @@ def street_second_opinion(api_key: str, houses: list[dict], progress=None,
     n = 0
     for h, t in zip(with_street, tmp):
         if t.get("grade") in (1, 2, 3):
-            for k in ("grade", "confidence", "evidence", "primary_material",
-                      "pitch_estimate", "obstruction_notes", "damage_boxes",
-                      "abandoned"):
+            _normalize_grade_keys(t)
+            for k in ("grade", "confidence", "evidence", "material",
+                      "pitch", "obstruction", "damage_boxes", "abandoned"):
                 if k in t:
                     h[k] = t[k]
+            # The street photo proved the roof assessable — drop any stale
+            # "tree-obscured" verdict attached during the aerial pass so the
+            # card never claims tree cover on a clearly-visible property.
+            # Also drop leftover raw keys so stale aerial values can't linger
+            # next to the fresh street data.
+            h.pop("verdict", None)
+            h.pop("verdict_note", None)
+            h.pop("primary_material", None)
+            h.pop("pitch_estimate", None)
+            h.pop("obstruction_notes", None)
             h["image_b64"] = t["image_b64"]
             h["imagery"] = t["imagery"]
             h["zoom"] = 0
@@ -1450,13 +1479,20 @@ _GRADE_ORDER = {1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 0: 5}
 
 
 _TREE_WORDS = ("tree", "canopy", "foliage", "woods", "vegetation")
+# The notes must say the trees HIDE the roof — a nearby tree that isn't
+# blocking anything must not trigger the verdict.
+_HIDE_WORDS = ("hid", "cover", "obscur", "block", "beneath", "under",
+               "behind", "over")
 
 
 def obscured_verdict(house: dict) -> dict | None:
     """Plain-language verdict when a roof can't be assessed at all.
 
-    Grade 0 + low confidence with tree/canopy obstruction means the
-    imagery is useless — say so plainly instead of handing back a bare 0.
+    Grade 0 + low confidence with tree/canopy actively hiding the roof
+    means the imagery is useless — say so plainly instead of handing back
+    a bare 0. Requires the notes to say the trees hide/cover the roof, not
+    merely mention one nearby, so a clearly-visible roof is never
+    mislabeled as tree-obscured.
     """
     if house.get("grade") != 0 or house.get("confidence") != "low":
         return None
@@ -1464,7 +1500,8 @@ def obscured_verdict(house: dict) -> dict | None:
         [str(house.get("obstruction") or "")] +
         [str(e) for e in (house.get("evidence") or [])]
     ).lower()
-    if any(w in text for w in _TREE_WORDS):
+    if (any(w in text for w in _TREE_WORDS)
+            and any(w in text for w in _HIDE_WORDS)):
         return {"verdict": "tree-obscured",
                 "verdict_note": ("Tree cover hides this roof — it can't be graded "
                                  "from the current aerial imagery. Try leaf-off "

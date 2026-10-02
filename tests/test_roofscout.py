@@ -658,6 +658,21 @@ class TestObscuredVerdict:
              "obstruction": "deep shadow, out of frame", "evidence": []}
         assert pipeline.obscured_verdict(h) is None
 
+    def test_incidental_tree_mention_no_verdict(self):
+        # A nearby tree that isn't hiding the roof must not trigger the
+        # tree-obscured verdict (regression: confabulated "tree cover").
+        h = {"grade": 0, "confidence": "low",
+             "obstruction": "tree visible near the road",
+             "evidence": ["facade visible, roof out of frame"]}
+        assert pipeline.obscured_verdict(h) is None
+
+    def test_tree_covering_roof_still_verdict(self):
+        h = {"grade": 0, "confidence": "low",
+             "obstruction": "",
+             "evidence": ["dense tree canopy covering the roof"]}
+        v = pipeline.obscured_verdict(h)
+        assert v and v["verdict"] == "tree-obscured"
+
     def test_grade_roofs_attaches_verdict(self):
         houses = [{"key": "k1", "image_b64": "x"}]
         def grader(imgs):
@@ -2457,3 +2472,36 @@ class TestStreetSecondOpinion:
         houses = [self._house(0)]
         pipeline.street_second_opinion("key", houses, grader=fake_grader)
         assert houses[0]["grade"] == 0  # unchanged, still filtered later
+
+    def test_street_update_clears_stale_tree_verdict(self, monkeypatch):
+        # Regression: the aerial pass attached a tree-obscured verdict, the
+        # street photo proved the roof assessable (grade 2) — the card must
+        # not keep claiming tree cover.
+        monkeypatch.setattr(pipeline, "_mapillary_image", lambda *a: None)
+        monkeypatch.setattr(pipeline, "_streetview_image",
+                            lambda *a: b"fakejpg")
+        def fake_grader(b64s):
+            return [{"grade": 2, "confidence": "medium",
+                     "evidence": ["missing shingles on front slope"],
+                     "primary_material": "asphalt shingle",
+                     "pitch_estimate": "Medium", "obstruction_notes": "",
+                     "damage_boxes": [], "abandoned": False}
+                    for _ in b64s]
+        h = self._house(0)
+        h.update({"confidence": "low", "obstruction": "tree cover",
+                  "verdict": "tree-obscured",
+                  "verdict_note": "Tree cover hides this roof"})
+        pipeline.street_second_opinion("key", [h], grader=fake_grader)
+        assert h["grade"] == 2
+        assert "verdict" not in h
+        assert "verdict_note" not in h
+        # street values fully replace aerial ones under canonical keys
+        assert h["material"] == "asphalt shingle"
+        assert h["pitch"] == "Medium"
+        assert h["obstruction"] == ""
+        assert "obstruction_notes" not in h
+
+    def test_normalize_grade_keys_prefers_mapped(self):
+        g = {"obstruction_notes": "raw", "obstruction": "mapped"}
+        pipeline._normalize_grade_keys(g)
+        assert g == {"obstruction": "mapped"}
