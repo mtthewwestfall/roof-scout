@@ -68,7 +68,8 @@ def zip_center(zipcode: str):
 
 
 _OVERPASS = ("https://overpass-api.de/api/interpreter",
-             "https://overpass.kumi.systems/api/interpreter")
+             "https://overpass.kumi.systems/api/interpreter",
+             "https://overpass.private.coffee/api/interpreter")
 
 
 _VACANT_TAGS = ("abandoned", "vacant", "ruins", "disused", "demolished")
@@ -99,58 +100,71 @@ class _OverpassDown(Exception):
 def _overpass_buildings(zipcode: str, lat0: float, lng0: float, limit: int = 120):
     """All building footprints in the area (roof-first, not address-first).
 
-    Tries the postal_code area first, then a tight bbox around the zip center
-    (Nominatim's zip bounding box is far too coarse for dense zips — a raw
-    bbox query can return tens of megabytes). Buildings already carrying
-    addr:housenumber + addr:street keep their address so no reverse-geocoding
-    is needed later; the rest get matched to addresses after grading, only
-    for roofs that actually need repair.
+    Queries a small bbox around the zip center first — fast when the
+    mirror is healthy and it covers the town center where most roofs are —
+    then widens to 1.6km only if the small box came back thin (rural zips).
+    The old postal_code area query is gone: US ZIP areas don't resolve in
+    OSM and the lookup just burned a minute before timing out.
+
+    Buildings already carrying addr:housenumber + addr:street keep their
+    address so no reverse-geocoding is needed later; the rest get matched
+    to addresses after grading, only for roofs that actually need repair.
 
     Raises _OverpassDown when every endpoint failed, so callers can tell
     "map data unavailable" apart from "map data has no buildings here"."""
-    r = 1.6 / 111.0  # ~1.6km half-box around the zip center
-    cosla = max(0.2, math.cos(math.radians(lat0)))
-    s, n = lat0 - r, lat0 + r
-    w, e = lng0 - r / cosla, lng0 + r / cosla
-    queries = [
-        # postal_code areas are NOT country-scoped ("21502" is also a German
-        # PLZ), so intersect with the US boundary area.
-        (f'[out:json][timeout:60];area["ISO3166-1"="US"][admin_level=2]->.us;'
-         f'area["postal_code"="{zipcode}"]->.a;'
-         f'(way["building"](area.a)(area.us););'
-         f'out center tags {limit};'),
-        (f'[out:json][timeout:60];'
-         f'(way["building"]'
-         f'({s},{w},{n},{e}););out center tags {limit};'),
-    ]
-    any_ok = False
-    for q in queries:
+    def box_query(half_km: float) -> str:
+        r = half_km / 111.0
+        cosla = max(0.2, math.cos(math.radians(lat0)))
+        s, n = lat0 - r, lat0 + r
+        w, e = lng0 - r / cosla, lng0 + r / cosla
+        return (f'[out:json][timeout:45];'
+                f'(way["building"]'
+                f'({s},{w},{n},{e}););out center tags {limit};')
+
+    def parse(data) -> list[dict]:
+        out = []
+        for el in data.get("elements", []):
+            c, t = el.get("center"), el.get("tags", {})
+            if not c:
+                continue
+            num, street = t.get("addr:housenumber"), t.get("addr:street")
+            out.append({"address": f"{num} {street}" if num and street else "",
+                        "lat": float(c["lat"]), "lng": float(c["lon"]),
+                        "building": t.get("building", ""),
+                        "vacant": _vacant_flag(t)})
+        return out
+
+    def attempt(q: str) -> tuple[list[dict], bool]:
+        """Try each mirror in turn. Returns (buildings, any_answered)."""
+        any_ok = False
         for ep in _OVERPASS:
             try:
                 req = urllib.request.Request(
                     ep, data=q.encode(),
                     headers={**_UA, "Content-Type": "text/plain"})
-                with urllib.request.urlopen(req, timeout=90) as resp:
+                with urllib.request.urlopen(req, timeout=50) as resp:
                     data = json.loads(resp.read().decode("utf-8", "replace"))
                 any_ok = True
-                out = []
-                for el in data.get("elements", []):
-                    c, t = el.get("center"), el.get("tags", {})
-                    if not c:
-                        continue
-                    num, street = t.get("addr:housenumber"), t.get("addr:street")
-                    out.append({"address": f"{num} {street}" if num and street else "",
-                                "lat": float(c["lat"]), "lng": float(c["lon"]),
-                                "building": t.get("building", ""),
-                                "vacant": _vacant_flag(t)})
-                if out:
-                    return out
-                break  # endpoint answered (empty); try the next query
+                blds = parse(data)
+                if blds:
+                    return blds, True
+                break  # endpoint answered (empty); don't hammer the mirrors
             except Exception:
                 continue
+        return [], any_ok
+
+    blds, any_ok = attempt(box_query(0.8))
+    if len(blds) < 40:
+        # Thin (or failed) small box: widen for rural zips. A failed small
+        # box still counts as "tried" — any_ok tracks whether any mirror
+        # actually answered.
+        wide, wide_ok = attempt(box_query(1.6))
+        any_ok = any_ok or wide_ok
+        if len(wide) > len(blds):
+            blds = wide
     if not any_ok:
         raise _OverpassDown(f"Overpass lookup failed for {zipcode}")
-    return []
+    return blds
 
 
 def _area_context(lat: float, lng: float) -> dict:
@@ -443,7 +457,8 @@ def _cell_of(lat: float, lng: float) -> tuple[int, int]:
     return (round(lat * 3000), round(lng * 3000))
 
 
-def _footprint_pool(zipcode: str, center, limit: int) -> tuple[list[dict], bool]:
+def _footprint_pool(zipcode: str, center, limit: int,
+                   progress=None) -> tuple[list[dict], bool]:
     """Deduplicated Overpass building footprints (one per ~35m cell).
 
     Returns (buildings, footprints_ok). footprints_ok=False means the
@@ -451,6 +466,8 @@ def _footprint_pool(zipcode: str, center, limit: int) -> tuple[list[dict], bool]
     building data (blind grid fallback), NOT that the area has no buildings.
     """
     lat0, lng0 = center[0], center[1]
+    if progress:
+        progress("footprints", 0, 1, "Finding rooftops on the map…")
     try:
         blds = _overpass_buildings(zipcode, lat0, lng0, limit=limit)
         ok = True
@@ -504,7 +521,8 @@ def candidate_roofs(zipcode: str, center, count: int, progress=None,
     exclude_cells = exclude_cells or set()
     lat0, lng0, _display, city = center
     ctx: dict = {}
-    pool, footprints_ok = _footprint_pool(zipcode, center, MICRO_SCAN_POOL * 2)
+    pool, footprints_ok = _footprint_pool(zipcode, center, MICRO_SCAN_POOL * 2,
+                                          progress=progress)
     if pool:
         ctx = _area_context(lat0, lng0)
     pool = [b for b in pool
@@ -555,7 +573,8 @@ def sample_roofs(zipcode: str, center, count: int, progress=None):
 
     note()
     ctx: dict = {}
-    uniq, _footprints_ok = _footprint_pool(zipcode, center, max(count * 6, 120))
+    uniq, _footprints_ok = _footprint_pool(zipcode, center, max(count * 6, 120),
+                                            progress=progress)
     if uniq:
         ctx = _area_context(lat0, lng0)
         # spread across the area: stride through lat-sorted footprints

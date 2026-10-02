@@ -2345,6 +2345,51 @@ class TestFootprintFallback:
         uniq, ok = pipeline._footprint_pool("21502", (39.64, -78.78), 120)
         assert uniq == [] and ok is False
 
+    def _fake_overpass_resp(self, n):
+        class FakeResp:
+            def read(self):
+                els = ",".join(
+                    '{"type":"way","id":%d,"center":{"lat":39.64,"lon":-78.78},'
+                    '"tags":{"building":"house"}}' % i for i in range(n))
+                return ('{"elements": [%s]}' % els).encode()
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+        return FakeResp()
+
+    def test_small_box_hit_skips_wide_query(self, monkeypatch):
+        calls = []
+        def fake_urlopen(req, timeout=50):
+            calls.append(req.data.decode())
+            return self._fake_overpass_resp(50)
+        monkeypatch.setattr(pipeline.urllib.request, "urlopen", fake_urlopen)
+        out = pipeline._overpass_buildings("21502", 39.64, -78.78)
+        assert len(out) == 50
+        assert len(calls) == 1  # wide box never queried
+        assert "[timeout:45]" in calls[0]
+
+    def test_thin_small_box_widens(self, monkeypatch):
+        calls = []
+        def fake_urlopen(req, timeout=50):
+            calls.append(req.data.decode())
+            # small box thin (5), wide box rich (100)
+            return self._fake_overpass_resp(5 if len(calls) == 1 else 100)
+        monkeypatch.setattr(pipeline.urllib.request, "urlopen", fake_urlopen)
+        out = pipeline._overpass_buildings("21502", 39.64, -78.78)
+        assert len(out) == 100  # wide result wins
+        assert len(calls) == 2
+        assert calls[0] != calls[1]  # different bboxes
+
+    def test_footprint_pool_announces_lookup(self, monkeypatch):
+        monkeypatch.setattr(pipeline, "_overpass_buildings",
+                            lambda *a, **k: [])
+        seen = []
+        uniq, ok = pipeline._footprint_pool(
+            "21502", (39.64, -78.78), 120,
+            progress=lambda phase, d, t, msg: seen.append((phase, msg)))
+        assert ok is True and uniq == []
+        assert seen and seen[0][0] == "footprints"
+        assert "rooftop" in seen[0][1].lower()
+
     def test_candidate_roofs_flags_failure(self, monkeypatch):
         def boom(*a, **k): raise pipeline._OverpassDown("down")
         monkeypatch.setattr(pipeline, "_overpass_buildings", boom)
