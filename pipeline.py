@@ -949,6 +949,73 @@ _GEMINI_URL = ("https://generativelanguage.googleapis.com/v1beta/models/"
                "gemini-3.1-flash-lite:generateContent")
 
 
+EVIDENCE_PROMPT = """You are looking at roof images (aerial or street-level). For each image, write exactly 3 bullet observations describing ONLY what you visibly see — colors, shapes, sizes, positions, objects. Pretend you are describing the photo to someone who cannot see it.
+
+Rules:
+- NO jargon, NO diagnosis, NO roofing-technical terms. Do NOT use: mottled, patchy, granule, granules, curling, curled, cupping, cupped, darkening, staining, stained, aging, aged, wear, worn, deterioration, deteriorated, weathering, weathered, blistering, alligatoring, shingles, flashing.
+- You MAY use plain position words: the peak, the edge, the slope, the chimney, the vent, left, right, center, top, bottom.
+- Each bullet MUST include a size or count AND a position (e.g. "a pale-gray patch roughly the size of a car door on the front slope, about 3 feet below the peak, slightly left of center").
+- Be concrete and specific to THIS image. If two images look similar, find what is actually different. Two different images must never receive identical text.
+
+The images are in order. Return a JSON array with exactly one inner array per image, in order: [["bullet 1", "bullet 2", "bullet 3"], ...]. Return ONLY the JSON array."""
+
+
+def _evidence_call(api_key: str, image_b64_list: list[str]) -> str | None:
+    """Standalone evidence description: no rubric, higher temperature.
+
+    The grading call (temp 0.1 + full Tru Scale rubric) primes the model
+    into emitting templated, often byte-identical evidence. Describing the
+    image in a separate call — with no rubric in context and temp 0.7 —
+    breaks that priming so each roof gets genuinely observed text.
+    """
+    parts: list[dict] = [{"text": EVIDENCE_PROMPT}]
+    for b64 in image_b64_list:
+        parts.append({"inline_data": {"mime_type": "image/jpeg",
+                                      "data": b64}})
+    payload = {
+        "contents": [{"parts": parts}],
+        "generationConfig": {
+            "temperature": 0.7, "maxOutputTokens": 2000,
+            "responseMimeType": "application/json",
+        },
+    }
+    req = urllib.request.Request(
+        _GEMINI_URL, data=json.dumps(payload).encode(), method="POST",
+        headers={"Content-Type": "application/json", "x-goog-api-key": api_key})
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            data = json.loads(resp.read().decode())
+        cands = data.get("candidates") or []
+        txt = "".join(p.get("text", "") for p in
+                      cands[0]["content"]["parts"] if p.get("text")).strip()
+        return txt or None
+    except Exception:
+        return None
+
+
+def refresh_evidence(api_key: str, houses: list[dict], evidencer=None) -> None:
+    """Regenerate visual evidence for damaged roofs (grades 1-3) via a
+    standalone, rubric-free call. Replaces the templated evidence from the
+    grading pass. evidencer() is a test hook like grader()."""
+    leads = [h for h in houses
+             if h.get("grade") in (1, 2, 3) and h.get("image_b64")]
+    if not leads:
+        return
+    if evidencer:
+        batches = evidencer([h["image_b64"] for h in leads])
+    else:
+        txt = _evidence_call(api_key, [h["image_b64"] for h in leads])
+        try:
+            batches = json.loads(txt) if txt else None
+        except Exception:
+            batches = None
+    if not isinstance(batches, list) or len(batches) != len(leads):
+        return  # keep the grading-pass evidence on failure
+    for h, ev in zip(leads, batches):
+        if isinstance(ev, list) and ev:
+            h["evidence"] = [str(x) for x in ev[:3]]
+
+
 def _gemini_call(api_key: str, image_b64_list: list[str],
                  sources: list[str] | None = None) -> str | None:
     parts: list[dict] = [{"text": GRADE_PROMPT}]
@@ -1279,7 +1346,7 @@ def attach_addresses(houses: list[dict], progress=None):
 
 
 def grade_roofs(api_key: str, houses: list[dict], progress=None,
-                grader=None) -> list[dict]:
+                grader=None, evidencer=None) -> list[dict]:
     """Attach grade/confidence/evidence to each house. grader() is a test hook."""
     pending = [h for h in houses if h.get("image_b64")]
     batch = 4
@@ -1330,6 +1397,14 @@ def grade_roofs(api_key: str, houses: list[dict], progress=None,
         v = obscured_verdict(h)
         if v:
             h.update(v)
+    # Evidence gets a standalone rubric-free pass (higher temperature) so
+    # each damaged roof is actually described, not templated. Skipped in
+    # tests unless an evidencer hook is given.
+    if api_key and (evidencer is not None or grader is None):
+        try:
+            refresh_evidence(api_key, houses, evidencer=evidencer)
+        except Exception:
+            pass
     return houses
 
 

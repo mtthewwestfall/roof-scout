@@ -2794,3 +2794,47 @@ class TestGoogleSatelliteFallback:
         monkeypatch.setattr(pipeline, "_google_satellite_image", fake_gsat)
         img, zoom, src = pipeline.roof_image(39.0, -80.0, 20)
         assert src == "esri"
+
+
+class TestRefreshEvidence:
+    def test_evidence_regenerated_for_leads_only(self):
+        # Grades 1-3 get fresh rubric-free evidence; healthy roofs keep
+        # their grading-pass text.
+        houses = [
+            {"key": "k1", "grade": 2, "image_b64": "aW1n",
+             "evidence": ["old template"]},
+            {"key": "k2", "grade": 4, "image_b64": "aW1n",
+             "evidence": ["old template"]},
+            {"key": "k3", "grade": 3, "image_b64": "aW1n",
+             "evidence": ["old template"]},
+        ]
+        evidencer = lambda b64s: [
+            ["a rust-orange streak the size of a dinner plate, 2 feet left of the chimney",
+             "four lifted tabs along the south edge",
+             "a dark patch near the bottom right corner"],
+            ["a pale square where a vent was removed, center of the slope",
+             "two cracked tiles above the left dormer",
+             "green tint across the lower third"],
+        ]
+        pipeline.refresh_evidence("key", houses, evidencer=evidencer)
+        assert houses[0]["evidence"][0].startswith("a rust-orange streak")
+        assert houses[2]["evidence"][0].startswith("a pale square")
+        # Healthy roof untouched.
+        assert houses[1]["evidence"] == ["old template"]
+
+    def test_evidence_kept_on_failure(self):
+        houses = [{"key": "k1", "grade": 2, "image_b64": "aW1n",
+                   "evidence": ["old template"]}]
+        pipeline.refresh_evidence("key", houses,
+                                  evidencer=lambda b64s: None)
+        assert houses[0]["evidence"] == ["old template"]
+
+    def test_no_rubric_in_evidence_prompt(self):
+        # The standalone evidence prompt must not contain the Tru Scale
+        # rubric definitions — that priming is what caused templated
+        # evidence. (Forbidden-word mentions are fine; definitions are not.)
+        p = pipeline.EVIDENCE_PROMPT
+        assert "Tru Scale" not in p
+        assert "5 SOLID" not in p
+        assert "3 AGING" not in p
+        assert "patchy granule loss (shiny or mottled sheen)" not in p
