@@ -689,13 +689,14 @@ def _usps_token() -> str | None:
         if _usps_token_cache["value"] and \
                 time.time() < _usps_token_cache["expires"] - 60:
             return _usps_token_cache["value"]
-    body = urllib.parse.urlencode({
-        "grant_type": "client_credentials",
+    # USPS expects a JSON body (per their official api-examples).
+    body = json.dumps({
         "client_id": USPS_CLIENT_ID,
-        "client_secret": USPS_CLIENT_SECRET}).encode()
+        "client_secret": USPS_CLIENT_SECRET,
+        "grant_type": "client_credentials"}).encode()
     req = urllib.request.Request(
         f"{USPS_BASE}/oauth2/v3/token", data=body,
-        headers={"Content-Type": "application/x-www-form-urlencoded",
+        headers={"Content-Type": "application/json",
                  "User-Agent": "RoofScout/1.0"})
     with urllib.request.urlopen(req, timeout=20) as resp:
         data = json.loads(resp.read())
