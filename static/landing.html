@@ -7,184 +7,172 @@
   <meta name="description" content="Roof Scout scans satellite imagery of every rooftop in any ZIP code, grades each roof for damage with AI, and hands you verified addresses ranked worst-first. Start free.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,500;9..144,600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Space+Grotesk:wght@500;600;700&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet">
   <style>
-    :root {
-      --bg: #0a0d12; --bg2: #0e1319; --ink: #edf1f6; --mut: #9aa7ba;
-      --line: rgba(255,255,255,.09); --accent: #e8a33d; --accent-dim: rgba(232,163,61,.12);
-      --radius: 14px;
-    }
     * { box-sizing: border-box; }
-    body { margin: 0; font-family: "Inter", -apple-system, "Segoe UI", sans-serif; color: var(--ink);
-      background: var(--bg); -webkit-font-smoothing: antialiased; line-height: 1.55; }
-    h1, h2, h3, .serif { font-family: "Fraunces", Georgia, serif; font-weight: 600; letter-spacing: -0.01em; }
+    body { margin: 0; font-family: "Inter", -apple-system, "Segoe UI", sans-serif; color: #16233a;
+      background: #f2f7fb; -webkit-font-smoothing: antialiased; line-height: 1.55; }
+    h1, h2, h3, .serif { font-family: "Space Grotesk", sans-serif; font-weight: 600; letter-spacing: -0.01em; }
     .wrap { max-width: 1160px; margin: 0 auto; padding: 0 32px; }
-
-    nav { position: sticky; top: 0; z-index: 50; background: rgba(10,13,18,.88);
-      backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); border-bottom: 1px solid var(--line); }
+    nav { position: sticky; top: 0; z-index: 50; background: rgba(242,247,251,.92);
+      backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); border-bottom: 1px solid #d4e0ee; }
     nav .wrap { display: flex; align-items: center; min-height: 72px; gap: 32px; }
-    .brand { text-decoration: none; margin-right: auto; display: flex; align-items: baseline; gap: 12px; }
-    .brand-name { font-family: "Fraunces", serif; font-weight: 600; font-size: 20px; color: var(--ink); }
-    .brand-sub { font-size: 11px; letter-spacing: .22em; color: var(--mut); font-weight: 600; }
+    .brand { text-decoration: none; margin-right: auto; display: flex; align-items: center; gap: 12px; }
+    .brand-mark { width: 38px; height: 38px; border-radius: 12px; background: linear-gradient(135deg, #60a5fa, #2563eb);
+      display: flex; align-items: center; justify-content: center; color: #fff; font-weight: 700; font-size: 18px; }
+    .brand-name { font-family: "Space Grotesk", sans-serif; font-weight: 600; font-size: 20px; color: #16233a; }
     nav .links { display: flex; gap: 28px; font-size: 14.5px; }
-    nav .links a { color: var(--mut); text-decoration: none; }
-    nav .links a:hover { color: var(--ink); }
-
+    nav .links a { color: #5b6b82; text-decoration: none; font-weight: 500; }
+    nav .links a:hover { color: #16233a; }
     .btn { display: inline-block; padding: 14px 30px; border-radius: 999px; font-weight: 600; font-size: 15px;
       text-decoration: none; border: 1px solid transparent; cursor: pointer; }
-    .btn-primary { background: var(--accent); color: #1a1206; }
-    .btn-primary:hover { background: #f2b45a; }
-    .btn-quiet { border-color: var(--line); color: var(--ink); background: transparent; }
-    .btn-quiet:hover { border-color: rgba(255,255,255,.25); }
+    .btn-primary { background: #16233a; color: #f2f7fb; }
+    .btn-primary:hover { filter: brightness(0.92); }
+    .btn-peach { background: #2563eb; color: #ffffff; }
+    .btn-peach:hover { filter: brightness(0.92); }
+    .btn-quiet { border-color: #d4e0ee; color: #16233a; background: #ffffff; }
     .btn-sm { padding: 10px 22px; font-size: 14px; }
-
-    .hero { padding: 110px 0 80px; text-align: center; }
-    .rule { width: 44px; height: 2px; background: var(--accent); margin: 0 auto 28px; }
-    .video-shell { margin: 64px auto 0; max-width: 920px; border-radius: 20px; overflow: hidden;
-      border: 1px solid var(--line); }
-    .video-shell video { display: block; width: 100%; height: auto; background: #000; }
-    .video-cap { margin-top: 14px; font-size: 13px; color: var(--mut); letter-spacing: .03em; }
-    h1 { font-size: clamp(40px, 5.6vw, 68px); line-height: 1.06; margin: 0 0 24px; }
-    h1 em { font-style: italic; color: var(--accent); }
-    .sub { font-size: 18.5px; color: var(--mut); max-width: 640px; margin: 0 auto 40px; line-height: 1.7; }
+    .hero { padding: 100px 0 80px; text-align: center;
+      background: radial-gradient(800px 400px at 50% 0%, rgba(37,99,235,.10) 0%, transparent 70%), #f2f7fb; }
+    .pill { display: inline-block; font-size: 12px; font-weight: 700; letter-spacing: .16em; color: #2563eb;
+      text-transform: uppercase; margin-bottom: 24px; padding: 8px 18px; border-radius: 999px;
+      background: #e3ecfa; border: 1px solid #d4e0ee; }
+    h1 { font-size: clamp(40px, 5.4vw, 64px); line-height: 1.08; margin: 0 0 24px; }
+    h1 em { font-style: italic; color: #2563eb; }
+    .sub { font-size: 18.5px; color: #5b6b82; max-width: 640px; margin: 0 auto 40px; line-height: 1.7; }
     .cta-row { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; margin-bottom: 16px; }
-    .fine { font-size: 13px; color: var(--mut); letter-spacing: .04em; }
-    .video-shell { margin: 64px auto 0; max-width: 920px; border-radius: 20px; overflow: hidden;
-      border: 1px solid var(--line); }
-    .video-shell video { display: block; width: 100%; height: auto; background: #000; }
-    .video-cap { margin-top: 14px; font-size: 13px; color: var(--mut); letter-spacing: .03em; }
-
-    section.block { padding: 100px 0; border-top: 1px solid var(--line); }
-    .kicker { font-size: 12px; font-weight: 700; letter-spacing: .26em; text-transform: uppercase;
-      color: var(--accent); margin-bottom: 18px; }
-    h2 { font-size: clamp(30px, 4vw, 46px); margin: 0 0 18px; line-height: 1.12; }
-    .sec-sub { color: var(--mut); font-size: 17.5px; max-width: 640px; line-height: 1.7; margin-bottom: 56px; }
+    .fine { font-size: 13.5px; color: #5b6b82; }
+    .video-shell { margin: 60px auto 0; max-width: 900px; border-radius: 22px; overflow: hidden;
+      border: 6px solid #ffffff; box-shadow: 0 30px 80px rgba(37,99,235,.10); }
+    .video-shell video { display: block; width: 100%; height: auto; background: #111; }
+    section.block { padding: 96px 0; }
+    section.tint { background: #e8eff6; }
+    .kicker { font-size: 12px; font-weight: 700; letter-spacing: .24em; text-transform: uppercase;
+      color: #2563eb; margin-bottom: 16px; }
+    h2 { font-size: clamp(30px, 4vw, 44px); margin: 0 0 18px; line-height: 1.14; }
+    .sec-sub { color: #5b6b82; font-size: 17.5px; max-width: 640px; line-height: 1.7; margin-bottom: 54px; }
     .center { text-align: center; } .center .sec-sub { margin-left: auto; margin-right: auto; }
-
-    .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
-    .step { padding: 38px 34px; background: var(--bg2); }
-    .step + .step { border-left: 1px solid var(--line); }
-    .step .n { font-family: "Fraunces", serif; font-size: 15px; color: var(--accent); margin-bottom: 16px; letter-spacing: .1em; }
-    .step h3 { margin: 0 0 12px; font-size: 21px; }
-    .step p { margin: 0; color: var(--mut); font-size: 15px; line-height: 1.7; }
-
-    .vs { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
-    .panel { border: 1px solid var(--line); border-radius: var(--radius); padding: 36px 34px; background: var(--bg2); }
-    .panel.win { border-color: rgba(232,163,61,.45); background: linear-gradient(180deg, rgba(232,163,61,.07), transparent 55%), var(--bg2); }
-    .panel .lbl { font-size: 11.5px; font-weight: 700; letter-spacing: .22em; color: var(--mut); margin-bottom: 8px; }
-    .panel.win .lbl { color: var(--accent); }
+    .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; }
+    .step { background: #ffffff; border: 1px solid #d4e0ee; border-radius: 16px; padding: 34px 30px;
+      box-shadow: 0 8px 30px rgba(100,130,170,.12); }
+    .step .n { width: 44px; height: 44px; border-radius: 14px; background: #e3ecfa; color: #2563eb;
+      display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 17px; margin-bottom: 20px; }
+    .step h3 { margin: 0 0 10px; font-size: 20px; }
+    .step p { margin: 0; color: #5b6b82; font-size: 15px; line-height: 1.7; }
+    .vs { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
+    .panel { border-radius: 16px; padding: 36px 34px; background: #ffffff; border: 1px solid #d4e0ee; }
+    .panel.win { border: 2px solid #2563eb; box-shadow: 0 16px 50px rgba(37,99,235,.10); }
+    .panel .lbl { font-size: 11.5px; font-weight: 700; letter-spacing: .2em; color: #5b6b82; margin-bottom: 8px; }
+    .panel.win .lbl { color: #2563eb; }
     .panel h3 { margin: 0 0 20px; font-size: 24px; }
     .panel ul { list-style: none; padding: 0; margin: 0; }
-    .panel li { padding: 12px 0; border-top: 1px solid var(--line); font-size: 15px; color: var(--mut); line-height: 1.6; }
+    .panel li { padding: 12px 0 12px 32px; border-top: 1px solid #d4e0ee; font-size: 15px; color: #5b6b82;
+      line-height: 1.6; position: relative; }
     .panel li:first-child { border-top: none; }
-    .panel li b { color: var(--ink); font-weight: 600; }
-
-    .grid6 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; }
-    .f { padding: 6px 0; }
-    .f .t { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
-    .f .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; }
-    .f h3 { margin: 0; font-size: 18px; font-family: "Inter", sans-serif; font-weight: 600; }
-    .f p { margin: 0; color: var(--mut); font-size: 14.5px; line-height: 1.7; }
-
-    .tiers { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; text-align: left; align-items: stretch; }
-    .tier { border: 1px solid var(--line); border-radius: var(--radius); padding: 36px 32px; background: var(--bg2);
-      display: flex; flex-direction: column; }
-    .tier.hot { border-color: rgba(232,163,61,.55); }
-    .tier .tn { font-size: 12px; font-weight: 700; letter-spacing: .24em; color: var(--mut); margin-bottom: 14px; }
-    .tier.hot .tn { color: var(--accent); }
-    .tier .pr { font-family: "Fraunces", serif; font-size: 52px; font-weight: 600; line-height: 1; }
-    .tier .pe { color: var(--mut); font-size: 14px; margin: 8px 0 24px; }
+    .panel li b { color: #16233a; }
+    .panel:not(.win) li::before { content: "\2715"; position: absolute; left: 4px; color: #d98a8a; font-weight: 700; }
+    .panel.win li::before { content: "\2713"; position: absolute; left: 4px; color: #7d9b76; font-weight: 700; }
+    .grid6 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; }
+    .f { background: #ffffff; border: 1px solid #d4e0ee; border-radius: 16px; padding: 28px 26px; }
+    .f .ic { width: 48px; height: 48px; border-radius: 14px; display: flex; align-items: center;
+      justify-content: center; font-size: 22px; margin-bottom: 16px; }
+    .f h3 { margin: 0 0 8px; font-size: 17px; font-family: "Inter", sans-serif; font-weight: 600; }
+    .f p { margin: 0; color: #5b6b82; font-size: 14.5px; line-height: 1.7; }
+    .tiers { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; text-align: left; align-items: stretch; }
+    .tier { border: 1px solid #d4e0ee; border-radius: 20px; padding: 36px 32px; background: #ffffff;
+      display: flex; flex-direction: column; box-shadow: 0 8px 30px rgba(100,130,170,.12); }
+    .tier.hot { background: #16233a; color: #f2f7fb; border-color: #16233a; }
+    .tier .tn { font-size: 12px; font-weight: 700; letter-spacing: .22em; color: #5b6b82; margin-bottom: 14px; }
+    .tier.hot .tn { color: #c7d6f5; }
+    .tier .pr { font-family: "Space Grotesk", sans-serif; font-size: 52px; font-weight: 600; line-height: 1; }
+    .tier .pe { color: #5b6b82; font-size: 14px; margin: 8px 0 24px; }
+    .tier.hot .pe { color: #9fb0c8; }
     .tier ul { list-style: none; padding: 0; margin: 0 0 30px; flex: 1; }
-    .tier li { padding: 10px 0; font-size: 15px; color: var(--mut); border-top: 1px solid var(--line); }
-    .tier li:first-child { border-top: none; } .tier li b { color: var(--ink); }
+    .tier li { padding: 10px 0; font-size: 15px; color: #5b6b82; border-top: 1px solid #d4e0ee; }
+    .tier.hot li { color: #9fb0c8; border-top-color: rgba(255,255,255,.12); }
+    .tier li:first-child { border-top: none; } .tier li b { color: #16233a; }
+    .tier.hot li b { color: #f2f7fb; }
     .tier .btn { text-align: center; }
-
     .faq { max-width: 760px; margin: 0 auto; }
-    details { border-bottom: 1px solid var(--line); padding: 22px 4px; }
-    details:first-child { border-top: 1px solid var(--line); }
-    summary { cursor: pointer; font-weight: 600; font-size: 16.5px; list-style: none; display: flex; justify-content: space-between; gap: 16px; }
+    details { background: #ffffff; border: 1px solid #d4e0ee; border-radius: 14px; padding: 22px 26px; margin-bottom: 12px; }
+    summary { cursor: pointer; font-weight: 600; font-size: 16px; list-style: none; display: flex; justify-content: space-between; gap: 16px; }
     summary::-webkit-details-marker { display: none; }
-    summary::after { content: "+"; color: var(--accent); font-weight: 400; font-size: 22px; line-height: 1; }
-    details[open] summary::after { content: "–"; }
-    details p { color: var(--mut); font-size: 15px; line-height: 1.75; margin: 14px 0 4px; max-width: 640px; }
-
-    .final { text-align: center; padding: 120px 0; border-top: 1px solid var(--line); }
-    footer { border-top: 1px solid var(--line); padding: 32px 0; color: var(--mut); font-size: 13.5px; }
+    summary::after { content: "+"; color: #2563eb; font-size: 22px; line-height: 1; }
+    details[open] summary::after { content: "\2013"; }
+    details p { color: #5b6b82; font-size: 15px; line-height: 1.75; margin: 14px 0 4px; }
+    .final { text-align: center; padding: 110px 0; background: linear-gradient(180deg, #e8eff6, #dde8f2); }
+    footer { padding: 32px 0; color: #5b6b82; font-size: 13.5px; border-top: 1px solid #d4e0ee; }
     footer .wrap { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
-    footer a { color: var(--mut); text-decoration: none; } footer a:hover { color: var(--ink); }
-
+    footer a { color: #5b6b82; text-decoration: none; }
     @media (max-width: 880px) {
       .steps, .vs, .grid6, .tiers { grid-template-columns: 1fr; }
-      .step + .step { border-left: none; border-top: 1px solid var(--line); }
       nav .links { display: none; }
       .hero { padding: 70px 0 56px; }
       section.block { padding: 70px 0; }
     }
   </style>
+
+
+
 </head>
 <body>
-
 <nav>
   <div class="wrap">
-    <a class="brand" href="#"><span class="brand-name">Roof Scout</span><span class="brand-sub">AI ROOF INTEL</span></a>
+    <a class="brand" href="#"><span class="brand-mark">⌂</span><span class="brand-name">Roof Scout</span></a>
     <div class="links">
       <a href="#how">How it works</a><a href="#why">Why Roof Scout</a>
       <a href="#pricing">Pricing</a><a href="#faq">FAQ</a>
     </div>
-    <a class="btn btn-primary btn-sm" href="/app">Start free trial</a>
+    <a class="btn btn-peach btn-sm" href="/app">Start free trial</a>
   </div>
 </nav>
-
 <div class="hero">
   <div class="wrap">
-    <div class="rule"></div>
+    <div class="pill">AI roof-lead scanner</div>
     <h1>Know which roofs need work<br><em>before you knock.</em></h1>
-    <p class="sub">Roof Scout scans satellite imagery across any ZIP code, grades every rooftop for visible damage, and delivers verified addresses with street-level photos — ranked worst-first. Your crew stops knocking blind doors — and starts knocking on the right ones.</p>
+    <p class="sub">Roof Scout scans satellite imagery across any ZIP code, grades every rooftop for visible damage, and delivers verified addresses with street-level photos &mdash; ranked worst-first. Your crew stops knocking blind doors &mdash; and starts knocking on the right ones.</p>
     <div class="cta-row">
       <a class="btn btn-primary" href="/app">Start free trial</a>
       <a class="btn btn-quiet" href="#how">See how it works</a>
     </div>
-    <div class="fine">Free trial · 1 ZIP scan + 5 leads · No credit card required</div>
+    <div class="fine">Free trial &middot; 1 ZIP scan + 5 leads &middot; No credit card required</div>
     <div class="video-shell">
       <video src="/static/roofscout_demo.mp4" controls autoplay muted loop playsinline preload="metadata"></video>
     </div>
-    <div class="video-cap">Live aerial scan — AI flagging roof damage in seconds</div>
   </div>
 </div>
-
 <section class="block" id="how">
   <div class="wrap">
     <div class="kicker">How it works</div>
     <h2>Three steps to a full pipeline</h2>
     <p class="sec-sub">No door-knocking routes drawn on paper maps. No buying the same list as everyone else. Just scan, grade, close.</p>
     <div class="steps">
-      <div class="step"><div class="n">— 01</div><h3>Scan the ZIP</h3><p>Enter any ZIP code. Roof Scout pulls current satellite and aerial imagery and maps every rooftop in the area.</p></div>
-      <div class="step"><div class="n">— 02</div><h3>Grade the damage</h3><p>AI inspects each roof and grades it 1–5 — failing to solid — with plain-language notes on the issue and the fix. Worst first.</p></div>
-      <div class="step"><div class="n">— 03</div><h3>Work the leads</h3><p>Unlock verified addresses with street-level photos. Knock, call, or mail — arriving first, with proof.</p></div>
+      <div class="step"><div class="n">1</div><h3>Scan the ZIP</h3><p>Enter any ZIP code. Roof Scout pulls current satellite and aerial imagery and maps every rooftop in the area.</p></div>
+      <div class="step"><div class="n">2</div><h3>Grade the damage</h3><p>AI inspects each roof and grades it 1&ndash;5 &mdash; failing to solid &mdash; with plain-language notes on the issue and the fix. Worst first.</p></div>
+      <div class="step"><div class="n">3</div><h3>Work the leads</h3><p>Unlock verified addresses with street-level photos. Knock, call, or mail &mdash; arriving first, with proof.</p></div>
     </div>
   </div>
 </section>
-
-<section class="block" id="why">
+<section class="block tint" id="why">
   <div class="wrap">
     <div class="kicker">Why Roof Scout</div>
-    <h2>The lead business is broken.<br>Here's the fix.</h2>
-    <p class="sec-sub">Brokers sell one homeowner's name to five roofers and call it a lead. We think a lead should be a damaged roof, found today, that only you know about.</p>
+    <h2>The lead business is broken.<br>Here&rsquo;s the fix.</h2>
+    <p class="sec-sub">Brokers sell one homeowner&rsquo;s name to five roofers and call it a lead. We think a lead should be a damaged roof, found today, that only you know about.</p>
     <div class="vs">
       <div class="panel">
         <div class="lbl">LEAD BROKERS</div><h3>Shared, stale, expensive</h3>
         <ul>
-          <li><b>$50–$100+ per lead</b> — sold to 4–5 competitors simultaneously</li>
-          <li>Weeks old by the time you call; the job's half-decided</li>
-          <li>Zero roof condition data — you're quoting blind</li>
+          <li><b>$50&ndash;$100+ per lead</b> &mdash; sold to 4&ndash;5 competitors simultaneously</li>
+          <li>Weeks old by the time you call; the job&rsquo;s half-decided</li>
+          <li>Zero roof condition data &mdash; you&rsquo;re quoting blind</li>
           <li>Compete on price against four other bids</li>
         </ul>
       </div>
       <div class="panel win">
         <div class="lbl">ROOF SCOUT</div><h3>Exclusive, fresh, precise</h3>
         <ul>
-          <li><b>~$2 per lead</b> on Starter — found by you, for you</li>
-          <li>Graded from current imagery — damage as it looks today</li>
+          <li><b>~$2 per lead</b> on Starter &mdash; found by you, for you</li>
+          <li>Graded from current imagery &mdash; damage as it looks today</li>
           <li>AI grade + street-level photo before you ever knock</li>
           <li>First on the doorstep, with evidence in hand</li>
         </ul>
@@ -192,77 +180,71 @@
     </div>
   </div>
 </section>
-
 <section class="block" id="features">
   <div class="wrap">
     <div class="kicker">Capabilities</div>
     <h2>Everything between scan and signature</h2>
-    <div class="grid6" style="margin-top:56px;">
-      <div class="f"><div class="t"><span class="dot"></span><h3>Satellite-first scanning</h3></div><p>Every rooftop in the ZIP swept from current aerial imagery; only damaged roofs earn the deep AI inspection.</p></div>
-      <div class="f"><div class="t"><span class="dot"></span><h3>Ranked by severity</h3></div><p>Grades 1–3 return worst-first, each with plain-language notes on what's wrong and what it needs.</p></div>
-      <div class="f"><div class="t"><span class="dot"></span><h3>Verified addresses</h3></div><p>Real street addresses cross-checked against mapping data. No PO boxes, no guesses dressed as facts.</p></div>
-      <div class="f"><div class="t"><span class="dot"></span><h3>Street-level photos</h3></div><p>Each unlocked lead carries a street-level photo — know the house before you knock.</p></div>
-      <div class="f"><div class="t"><span class="dot"></span><h3>Vacant-property review</h3></div><p>Derelict properties go to a review flow, not your unlock count. Reject one, get the unlock replaced.</p></div>
-      <div class="f"><div class="t"><span class="dot"></span><h3>Yours alone</h3></div><p>You scanned it, you found it. The list is never resold.</p></div>
+    <div class="grid6" style="margin-top:54px;">
+      <div class="f"><div class="ic" style="background:#fbeedf;">&#128752;</div><h3>Satellite-first scanning</h3><p>Every rooftop in the ZIP swept from current aerial imagery; only damaged roofs earn the deep AI inspection.</p></div>
+      <div class="f"><div class="ic" style="background:#eef4e8;">&#127919;</div><h3>Ranked by severity</h3><p>Grades 1&ndash;3 return worst-first, each with plain-language notes on what&rsquo;s wrong and what it needs.</p></div>
+      <div class="f"><div class="ic" style="background:#e8f0f8;">&#128205;</div><h3>Verified addresses</h3><p>Real street addresses cross-checked against mapping data. No PO boxes, no guesses dressed as facts.</p></div>
+      <div class="f"><div class="ic" style="background:#f6e8f0;">&#128247;</div><h3>Street-level photos</h3><p>Each unlocked lead carries a street-level photo &mdash; know the house before you knock.</p></div>
+      <div class="f"><div class="ic" style="background:#fdf3e0;">&#127968;</div><h3>Vacant-property review</h3><p>Derelict properties go to a review flow, not your unlock count. Reject one, get the unlock replaced.</p></div>
+      <div class="f"><div class="ic" style="background:#e8f4ee;">&#128274;</div><h3>Yours alone</h3><p>You scanned it, you found it. The list is never resold.</p></div>
     </div>
   </div>
 </section>
-
-<section class="block" id="pricing">
+<section class="block tint" id="pricing">
   <div class="wrap center">
     <div class="kicker">Pricing</div>
     <h2>One job covers the year</h2>
-    <p class="sec-sub">Start free, upgrade when the leads close. Cancel anytime — unlocked leads stay yours.</p>
-    <div class="tiers" style="margin-top:56px;">
+    <p class="sec-sub">Start free, upgrade when the leads close. Cancel anytime &mdash; unlocked leads stay yours.</p>
+    <div class="tiers" style="margin-top:54px;">
       <div class="tier">
         <div class="tn">TRIAL</div><div class="pr">$0</div>
-        <div class="pe">Free trial · no card required</div>
+        <div class="pe">Free trial &middot; no card required</div>
         <ul><li><b>1</b> ZIP code scan</li><li><b>5</b> lead unlocks</li><li>AI damage grades</li><li>Street-level photos</li></ul>
         <a class="btn btn-quiet" href="/app">Start free</a>
       </div>
       <div class="tier hot">
         <div class="tn">STARTER</div><div class="pr">$49.99</div>
-        <div class="pe">per month · cancel anytime</div>
+        <div class="pe">per month &middot; cancel anytime</div>
         <ul><li><b>5</b> ZIP scans / month</li><li><b>25</b> lead unlocks / month</li><li>AI damage grades</li><li>Street-level photos</li><li>Vacant-property review</li></ul>
-        <a class="btn btn-primary" href="/app">Start free trial</a>
+        <a class="btn btn-peach" href="/app">Start free trial</a>
       </div>
       <div class="tier">
         <div class="tn">PRO</div><div class="pr">$99.99</div>
-        <div class="pe">per month · cancel anytime</div>
+        <div class="pe">per month &middot; cancel anytime</div>
         <ul><li><b>20</b> ZIP scans / month</li><li><b>100</b> lead unlocks / month</li><li>Everything in Starter</li><li>Priority scan queue</li></ul>
         <a class="btn btn-quiet" href="/app">Start free trial</a>
       </div>
     </div>
   </div>
 </section>
-
 <section class="block" id="faq">
   <div class="wrap">
     <div class="center"><div class="kicker">FAQ</div><h2>Straight answers</h2></div>
     <div class="faq" style="margin-top:48px;">
-      <details><summary>Where do the roof images come from?</summary><p>Current satellite and aerial imagery — the same kind insurers and appraisers rely on. Where aerial views are inconclusive, street-level photos fill the gap.</p></details>
-      <details><summary>Are the leads really exclusive?</summary><p>Yes. You choose the ZIP, the AI finds the damage, the leads are yours. We never resell a list — exclusivity is the product.</p></details>
+      <details><summary>Where do the roof images come from?</summary><p>Current satellite and aerial imagery &mdash; the same kind insurers and appraisers rely on. Where aerial views are inconclusive, street-level photos fill the gap.</p></details>
+      <details><summary>Are the leads really exclusive?</summary><p>Yes. You choose the ZIP, the AI finds the damage, the leads are yours. We never resell a list &mdash; exclusivity is the product.</p></details>
       <details><summary>What about vacant or abandoned houses?</summary><p>Derelict properties are flagged into a review flow instead of consuming your unlocks. Approve or reject each one; rejections are replaced free.</p></details>
-      <details><summary>Do I need a credit card to try it?</summary><p>No. The trial — one ZIP scan, five unlocks — is free with no card. You only pay when you decide it's working.</p></details>
-      <details><summary>How accurate is the grading?</summary><p>It scores visible damage — missing shingles, wear, aging — 1 to 5, with plain notes. It's a targeting instrument for your crew's time, not a substitute for the on-roof inspection.</p></details>
+      <details><summary>Do I need a credit card to try it?</summary><p>No. The trial &mdash; one ZIP scan, five unlocks &mdash; is free with no card. You only pay when you decide it&rsquo;s working.</p></details>
+      <details><summary>How accurate is the grading?</summary><p>It scores visible damage &mdash; missing shingles, wear, aging &mdash; 1 to 5, with plain notes. It&rsquo;s a targeting instrument for your crew&rsquo;s time, not a substitute for the on-roof inspection.</p></details>
     </div>
   </div>
 </section>
-
 <div class="final">
   <div class="wrap">
-    <div class="rule" style="margin-bottom:32px;"></div>
     <h2>Somewhere in your ZIP,<br>a roof is failing <em>right now.</em></h2>
     <p class="sec-sub" style="margin-top:20px;">Be the first roofer who knows.</p>
     <a class="btn btn-primary" href="/app" style="font-size:17px; padding:17px 44px;">Start free trial</a>
     <div class="fine" style="margin-top:18px;">No credit card required.</div>
   </div>
 </div>
-
 <footer>
   <div class="wrap">
-    <span>© 2026 Roof Scout · AI roof intelligence for contractors.</span>
-    <span><a href="/app">Open the app →</a></span>
+    <span>&copy; 2026 Roof Scout &middot; AI roof intelligence for contractors.</span>
+    <span><a href="/app">Open the app &rarr;</a></span>
   </div>
 </footer>
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import html
 import json
 import os
 import re
@@ -1239,6 +1240,66 @@ def _set_job(job_id: str, **kw):
                 conn.close()
             except Exception:
                 pass
+        # Scan-complete email, once per job. Best-effort; never breaks scans.
+        try:
+            if not job.get("emailed"):
+                with _jobs_lock:
+                    _jobs[job_id]["emailed"] = True
+                _send_scan_complete_email(job_id, job)
+        except Exception:
+            pass
+
+
+def _send_scan_complete_email(job_id: str, job: dict):
+    """Email the scan owner when a scan finishes. Best-effort; never raises."""
+    try:
+        owner = job.get("owner") or ""
+        if not owner:
+            return
+        conn = sqlite3.connect(DB_PATH)
+        try:
+            row = conn.execute(
+                "SELECT email FROM users WHERE id=?", (owner,)).fetchone()
+        finally:
+            conn.close()
+        if not row or not row[0]:
+            return
+        email = row[0]
+        leads = job.get("leads") or []
+        area = job.get("area") or ""
+        n = len(leads)
+        base = os.environ.get("PUBLIC_APP_URL",
+                              "https://getveridatenow.com").rstrip("/")
+        link = f"{base}/app?job={job_id}"
+        if n:
+            top = "".join(
+                f"<li><b>Grade {l.get('grade')}</b> — "
+                f"{html.escape(str(l.get('address') or 'Address on file'))}"
+                f"{', ' + html.escape(str(l.get('city'))) if l.get('city') else ''}"
+                f"{', ' + html.escape(str(l.get('state'))) if l.get('state') else ''}</li>"
+                for l in leads[:3]
+            )
+            body = (f"<p>Your Roof Scout scan of <b>{html.escape(area)}</b> is done — "
+                    f"<b>{n}</b> damaged roof{'s' if n != 1 else ''} found, "
+                    f"worst first.</p><p>Top leads:</p><ul>{top}</ul>")
+            subject = (f"Your Roof Scout scan is done — {n} damaged roof"
+                       f"{'s' if n != 1 else ''} found in {area}")
+        else:
+            body = (f"<p>Your Roof Scout scan of <b>{html.escape(area)}</b> is done — "
+                    f"no visibly damaged roofs found this time. "
+                    f"Try another ZIP.</p>")
+            subject = f"Your Roof Scout scan of {area} is done"
+        html_body = (
+            '<div style="font-family:sans-serif;max-width:560px;margin:0 auto;">'
+            f"{body}"
+            f'<p><a href="{link}" style="display:inline-block;padding:12px 24px;'
+            'background:#2563eb;color:#fff;border-radius:8px;text-decoration:none;">'
+            "View your results</a></p>"
+            f'<p style="color:#666;font-size:13px;">Or open this link:<br>{link}</p>'
+            "</div>")
+        _send_email(email, subject, html_body)
+    except Exception:
+        pass
 
 
 def _run_houses(job_id: str, houses: list[dict], area: str,
