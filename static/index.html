@@ -730,7 +730,9 @@
           sidebar.appendChild(div);
         }
         const hasAddr = !!(lead.address && lead.address.trim());
-        const addrLine = hasAddr ? esc(lead.address)
+        const estBadge = (hasAddr && lead.address_confidence === 'estimated')
+          ? ` <span class="dim" title="Estimated from map data — verify before mailing">(est.)</span>` : '';
+        const addrLine = hasAddr ? esc(lead.address) + estBadge
           : `<span class="dim">Street address not in free records — <a href="${esc(lead.maps_url)}" target="_blank">verify on map</a></span>`;
         const loc = [lead.city, lead.state, lead.postcode].filter(Boolean).join(', ');
         const ev = (lead.evidence || []).map((e) => `<li>${esc(e)}</li>`).join('');
@@ -893,10 +895,10 @@
       if (usable.length < currentLeads.length)
         alert(`Exporting ${usable.length} unlocked lead${usable.length === 1 ? '' : 's'}. Locked leads are excluded.`);
       const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-      const rows = [['address', 'city', 'state', 'postcode', 'county', 'lat', 'lng', 'grade',
+      const rows = [['address', 'address_confidence', 'address_source', 'city', 'state', 'postcode', 'county', 'lat', 'lng', 'grade',
         'confidence', 'material', 'pitch', 'evidence', 'what_needs_done', 'maps_url']];
       usable.forEach((l) => rows.push([
-        l.address, l.city, l.state, l.postcode, l.county, l.lat, l.lng, l.grade,
+        l.address, l.address_confidence || '', l.address_source || '', l.city, l.state, l.postcode, l.county, l.lat, l.lng, l.grade,
         l.confidence, l.material, l.pitch, (l.evidence || []).join(' | '),
         (l.repair_breakdown || []).map((r) => `${r.issue} -> ${r.fix || ''}`).join(' | '),
         l.maps_url]));

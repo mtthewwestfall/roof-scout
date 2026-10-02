@@ -1848,3 +1848,135 @@ class TestEmailVerification:
                                   "password": "TestPass99!"})
         assert r.status_code == 200
         assert r.get_json()["user"]["email"] == "old@t.com"
+
+class TestAddressResolution:
+    """Tiered free-geocoder address matching: Census, Nominatim, Photon."""
+
+    @pytest.fixture
+    def no_sleep(self, monkeypatch):
+        monkeypatch.setattr(pipeline.time, "sleep", lambda *a: None)
+
+    def _house(self, **kw):
+        h = {"lat": 39.5, "lng": -80.0, "grade": 2, "address": "",
+             "city": "", "state": "", "postcode": "", "county": ""}
+        h.update(kw)
+        return h
+
+    def test_census_locality_enriches_nominatim_guess(self, monkeypatch,
+                                                     no_sleep):
+        monkeypatch.setattr(
+            pipeline, "_census_locality",
+            lambda lat, lng: {"city": "Fairmont", "state": "WV",
+                              "county": "Marion"})
+        monkeypatch.setattr(
+            pipeline, "_nominatim",
+            lambda path, params: {"address": {"road": "Rural Rd"}})
+        houses = [self._house()]
+        pipeline.attach_addresses(houses)
+        h = houses[0]
+        assert h["address"] == "Rural Rd"
+        assert h["address_confidence"] == "estimated"
+        assert h["city"] == "Fairmont"
+        assert h["county"] == "Marion"
+
+    def test_census_locality_stamped_when_no_street(self, monkeypatch,
+                                                    no_sleep):
+        monkeypatch.setattr(
+            pipeline, "_census_locality",
+            lambda lat, lng: {"city": "Fairmont", "state": "WV",
+                              "county": "Marion"})
+        monkeypatch.setattr(pipeline, "_nominatim",
+                            lambda path, params: {})
+        monkeypatch.setattr(pipeline, "_photon_reverse",
+                            lambda lat, lng: None)
+        houses = [self._house()]
+        pipeline.attach_addresses(houses)
+        h = houses[0]
+        assert h["address"] == ""
+        assert h["city"] == "Fairmont"
+        assert h["county"] == "Marion"
+
+    def test_nominatim_verified_when_house_and_road(self, monkeypatch,
+                                                    no_sleep):
+        monkeypatch.setattr(pipeline, "_census_locality",
+                            lambda lat, lng: {})
+        monkeypatch.setattr(
+            pipeline, "_nominatim",
+            lambda path, params: {"address": {"house_number": "456",
+                                              "road": "Oak Ave",
+                                              "city": "Morgantown",
+                                              "state": "WV",
+                                              "postcode": "26505",
+                                              "county": "Monongalia County"}})
+        houses = [self._house()]
+        pipeline.attach_addresses(houses)
+        h = houses[0]
+        assert h["address"] == "456 Oak Ave"
+        assert h["address_confidence"] == "verified"
+        assert h["address_source"] == "nominatim"
+
+    def test_nominatim_street_only_is_estimated_guess(self, monkeypatch,
+                                                      no_sleep):
+        monkeypatch.setattr(pipeline, "_census_locality",
+                            lambda lat, lng: {})
+        monkeypatch.setattr(
+            pipeline, "_nominatim",
+            lambda path, params: {"address": {"road": "Rural Rd",
+                                              "city": "Fairmont",
+                                              "state": "WV"}})
+        houses = [self._house()]
+        pipeline.attach_addresses(houses)
+        h = houses[0]
+        assert h["address"] == "Rural Rd"
+        assert h["address_confidence"] == "estimated"
+
+    def test_photon_fallback_when_others_miss(self, monkeypatch, no_sleep):
+        monkeypatch.setattr(pipeline, "_census_locality",
+                            lambda lat, lng: {})
+        monkeypatch.setattr(pipeline, "_nominatim",
+                            lambda path, params: {})
+        monkeypatch.setattr(
+            pipeline, "_photon_reverse",
+            lambda lat, lng: {"address": "789 Pine St", "city": "Clarksburg",
+                              "state": "WV", "postcode": "26301",
+                              "county": "Harrison"})
+        houses = [self._house()]
+        pipeline.attach_addresses(houses)
+        h = houses[0]
+        assert h["address"] == "789 Pine St"
+        assert h["address_source"] == "photon"
+        assert h["address_confidence"] == "estimated"
+
+    def test_all_miss_leaves_blank(self, monkeypatch, no_sleep):
+        monkeypatch.setattr(pipeline, "_census_locality",
+                            lambda lat, lng: {})
+        monkeypatch.setattr(pipeline, "_nominatim",
+                            lambda path, params: None)
+        monkeypatch.setattr(pipeline, "_photon_reverse",
+                            lambda lat, lng: None)
+        houses = [self._house()]
+        pipeline.attach_addresses(houses)
+        assert houses[0]["address"] == ""
+        assert "address_confidence" not in houses[0]
+
+    def test_osm_tagged_address_labeled_verified(self, monkeypatch,
+                                                 no_sleep):
+        seen = []
+        monkeypatch.setattr(pipeline, "_census_locality",
+                            lambda lat, lng: seen.append(1) or {})
+        houses = [self._house(address="10 Farm Ln")]
+        pipeline.attach_addresses(houses)
+        h = houses[0]
+        assert h["address"] == "10 Farm Ln"
+        assert h["address_confidence"] == "verified"
+        assert h["address_source"] == "map_tags"
+        assert seen == []  # never re-resolved
+
+    def test_healthy_roofs_skipped(self, monkeypatch, no_sleep):
+        calls = []
+        monkeypatch.setattr(pipeline, "_census_locality",
+                            lambda lat, lng: calls.append(1) or {})
+        houses = [self._house(grade=5), self._house(grade=4)]
+        pipeline.attach_addresses(houses)
+        assert calls == []
+        assert all(h["address"] == "" for h in houses)

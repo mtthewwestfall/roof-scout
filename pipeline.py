@@ -201,6 +201,153 @@ def _census_geocode(query: str):
     }
 
 
+_CENSUS_GEO = "https://geocoding.geo.census.gov/geocoder/geographies/coordinates"
+_PHOTON_REV = "https://photon.komoot.io/reverse"
+
+
+def _census_locality(lat: float, lng: float):
+    """Authoritative city/county/state from Census TIGER geographies.
+
+    Free, no key. Note: the Census coordinates endpoint only returns
+    geoLookup data (no street address), so this enriches the locality
+    fields — the street address itself comes from Nominatim/Photon.
+    Returns a dict with city/state/county, or None.
+    """
+    params = {"x": lng, "y": lat, "benchmark": "Public_AR_Current",
+              "vintage": "Current_Current", "format": "json"}
+    url = _CENSUS_GEO + "?" + urllib.parse.urlencode(params)
+    try:
+        req = urllib.request.Request(url, headers=_UA)
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            data = json.loads(resp.read().decode("utf-8", "replace"))
+    except Exception:
+        return None
+    geogs = (data.get("result") or {}).get("geographies") or {}
+
+    def _first(layer):
+        items = geogs.get(layer) or []
+        return items[0] if items else {}
+
+    states = _first("States")
+    counties = _first("Counties")
+    places = _first("Incorporated Places")
+    if not (states or counties or places):
+        return None
+    return {
+        "city": places.get("BASENAME", ""),
+        "state": states.get("STUSAB", "") or states.get("BASENAME", ""),
+        "county": counties.get("BASENAME", ""),
+    }
+
+
+def _photon_reverse(lat: float, lng: float):
+    """Photon (Komoot) reverse geocoder. OSM-based but a separate index
+    from Nominatim, so it sometimes knows addresses Nominatim misses.
+    Free, no key. Returns an address dict or None."""
+    params = {"lat": lat, "lon": lng}
+    url = _PHOTON_REV + "?" + urllib.parse.urlencode(params)
+    try:
+        req = urllib.request.Request(url, headers=_UA)
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            data = json.loads(resp.read().decode("utf-8", "replace"))
+    except Exception:
+        return None
+    feats = data.get("features") or []
+    if not feats:
+        return None
+    p = feats[0].get("properties") or {}
+    num, street = p.get("housenumber"), p.get("street")
+    if num and street:
+        addr = f"{num} {street}"
+    else:
+        addr = (street or "").strip()
+    if not addr:
+        addr = (p.get("name") or "").strip()
+    if not addr:
+        return None
+    return {
+        "address": addr,
+        "city": (p.get("city") or p.get("town") or p.get("village") or ""),
+        "state": p.get("state") or "",
+        "postcode": (p.get("postcode") or "")[:5],
+        "county": (p.get("county") or "").replace(" County", ""),
+    }
+
+
+def _apply_address(h: dict, r: dict, confidence: str, source: str):
+    """Fill a house's address fields from a resolver result, keeping the
+    existing city/state/etc. when the resolver has nothing better."""
+    h["address"] = r["address"]
+    h["address_confidence"] = confidence
+    h["address_source"] = source
+    for k in ("city", "state", "postcode", "county"):
+        h[k] = r.get(k) or h.get(k, "")
+
+
+def _resolve_address(h: dict) -> bool:
+    """Try the free reverse-geocoders in order; attach the first usable
+    address. Returns True if any address (verified or estimated) was set.
+    Nothing is invented: every guess comes from a real geocoder response
+    for these coordinates. Census TIGER data fills the city/county/state
+    authoritatively."""
+    lat, lng = h["lat"], h["lng"]
+
+    # 0. Census locality first (cheap, authoritative) — enriches whatever
+    #    the street-level resolvers find below.
+    try:
+        loc = _census_locality(lat, lng) or {}
+    except Exception:
+        loc = {}
+
+    # 1. Nominatim — verified when it returns house_number + road.
+    try:
+        d = _nominatim("/reverse",
+                       {"lat": lat, "lon": lng, "format": "json",
+                        "addressdetails": 1, "zoom": 18})
+        a = (d or {}).get("address", {}) if d else {}
+        house, road = a.get("house_number"), a.get("road")
+        city = (a.get("city") or a.get("town") or a.get("village") or
+                a.get("hamlet") or loc.get("city") or "")
+        base = {
+            "city": city,
+            "state": a.get("state") or loc.get("state") or "",
+            "postcode": (a.get("postcode") or "")[:5],
+            "county": ((a.get("county") or "").replace(" County", "") or
+                       loc.get("county") or ""),
+        }
+        if house and road:
+            _apply_address(h, {"address": f"{house} {road}", **base},
+                           "verified", "nominatim")
+            h["area"] = (a.get("suburb") or a.get("neighbourhood") or
+                         a.get("quarter") or h.get("area", ""))
+            return True
+        if road:
+            # Street-level educated guess — better than a blank.
+            _apply_address(h, {"address": road, **base},
+                           "estimated", "nominatim")
+            return True
+    except Exception:
+        pass
+
+    # 2. Photon fallback (separate OSM index, sometimes knows more).
+    try:
+        r = _photon_reverse(lat, lng)
+        if r and r.get("address"):
+            for k in ("city", "state", "county"):
+                r[k] = r.get(k) or loc.get(k) or ""
+            _apply_address(h, r, "estimated", "photon")
+            return True
+    except Exception:
+        pass
+
+    # 3. No street found anywhere — still stamp the authoritative
+    #    locality so the lead isn't a bare pin on a map.
+    for k in ("city", "state", "county"):
+        if loc.get(k) and not h.get(k):
+            h[k] = loc[k]
+    return False
+
+
 def geocode_latlng(lat: float, lng: float):
     """Build a house dict from pasted coordinates.
 
@@ -998,11 +1145,22 @@ def localize_damage(api_key: str, houses: list[dict], progress=None):
 def attach_addresses(houses: list[dict], progress=None):
     """Match damaged roofs to mailable street addresses.
 
-    Only roofs graded 1-3 get reverse-geocoded (Nominatim, ~1 req/sec) —
-    healthy roofs don't need a letter. Roofs that already carry an address
-    (OSM tags, typed search) are left alone. Sets h["address"] etc. where a
-    house number + street is found; otherwise the card shows a map link so
-    the address can be verified by hand."""
+    Only roofs graded 1-3 get reverse-geocoded — healthy roofs don't need
+    a letter. Resolution order (all free, no keys):
+      1. OSM addr:housenumber/addr:street tags (verified, kept as-is)
+      2. Nominatim reverse (verified when it returns house_number + road,
+         otherwise a street-level guess marked estimated)
+      3. Photon reverse (separate OSM index, fallback guess, estimated)
+    US Census TIGER geographies fill city/county/state authoritatively on
+    every lead. Owner's rule: an educated guess beats a blank address, but
+    every guess is labeled estimated so roofers know to verify before
+    mailing. Nothing is invented from thin air — each guess comes from a
+    real geocoder response for those coordinates."""
+    # OSM-tagged addresses are verified; label them so the UI can show it.
+    for h in houses:
+        if h.get("address") and not h.get("address_confidence"):
+            h["address_confidence"] = "verified"
+            h.setdefault("address_source", "map_tags")
     targets = [h for h in houses
                if h.get("grade") in (1, 2, 3) and not h.get("address")]
     total = len(targets)
@@ -1011,29 +1169,14 @@ def attach_addresses(houses: list[dict], progress=None):
             progress("addresses", i, total,
                      f"Matching addresses… {i}/{total}")
         try:
-            d = _nominatim("/reverse",
-                           {"lat": h["lat"], "lon": h["lng"], "format": "json",
-                            "addressdetails": 1, "zoom": 18})
-            a = (d or {}).get("address", {}) if d else {}
-            house, road = a.get("house_number"), a.get("road")
-            if house and road:
-                h["address"] = f"{house} {road}"
-                h["city"] = (a.get("city") or a.get("town") or
-                             a.get("village") or a.get("hamlet") or
-                             h.get("city", ""))
-                h["state"] = a.get("state", "") or h.get("state", "")
-                h["postcode"] = ((a.get("postcode") or "")[:5] or
-                                 h.get("postcode", ""))
-                h["county"] = ((a.get("county") or "").replace(" County", "") or
-                               h.get("county", ""))
-                h["area"] = (a.get("suburb") or a.get("neighbourhood") or
-                             a.get("quarter") or h.get("area", ""))
+            _resolve_address(h)
         except Exception:
             pass
-        time.sleep(1.05)  # Nominatim usage policy
+        time.sleep(1.05)  # be polite to the free geocoders
     if progress:
+        matched = sum(1 for h in targets if h.get("address"))
         progress("addresses", total, total,
-                 f"Matched {sum(1 for h in targets if h.get('address'))} address(es).")
+                 f"Matched {matched} address(es).")
     return houses
 
 
