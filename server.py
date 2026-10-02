@@ -202,8 +202,8 @@ def _db():
 
 PLANS = {
     "trial":   {"name": "Trial",   "scans": 1, "unlocks": 5,   "cycle_days": 0},
-    "starter": {"name": "Starter", "scans": 2, "unlocks": 25,  "cycle_days": 30},
-    "pro":     {"name": "Pro",     "scans": 8, "unlocks": 100, "cycle_days": 30},
+    "starter": {"name": "Starter", "scans": 5, "unlocks": 25,  "cycle_days": 30},
+    "pro":     {"name": "Pro",     "scans": 20, "unlocks": 100, "cycle_days": 30},
 }
 
 

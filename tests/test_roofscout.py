@@ -267,7 +267,7 @@ class TestCaps:
         signup(app_client, "p@x.com")
         set_plan("p@x.com", "pro")
         q = quota_of(app_client)
-        assert q["scans_cap"] == 8 and q["scans_left"] == 8
+        assert q["scans_cap"] == 20 and q["scans_left"] == 20
         assert q["unlocks_cap"] == 100 and q["unlocks_left"] == 100
 
     def test_masked_until_unlocked(self, app_client):
@@ -317,7 +317,7 @@ class TestCaps:
         set_plan("s@x.com", "starter", scans_used=2, unlocks_used=25,
                  period_start=time.time() - 31 * 86400)
         q = quota_of(app_client)
-        assert q["scans_left"] == 2 and q["unlocks_left"] == 25
+        assert q["scans_left"] == 5 and q["unlocks_left"] == 25
 
     def test_set_plan_gives_fresh_month(self, app_client, monkeypatch):
         monkeypatch.setenv("ADMIN_PASSWORD", "pw")
@@ -330,7 +330,7 @@ class TestCaps:
                     json={"email": "s@x.com", "plan": "starter"})
         assert r.status_code == 200
         q = quota_of(app_client)
-        assert q["scans_left"] == 2 and q["unlocks_left"] == 25
+        assert q["scans_left"] == 5 and q["unlocks_left"] == 25
 
 
 # ---------------- admin API ----------------

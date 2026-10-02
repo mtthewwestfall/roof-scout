@@ -563,7 +563,7 @@
           sidebar.innerHTML = `<div class="card" style="border:2px solid #f59e0b;">
             <h3 style="margin-top:0;">🧪 Trial scan used up</h3>
             <p style="font-size:14px; color:#b8cbe6;">Your free trial includes <b>1 ZIP scan</b> and <b>5 lead unlocks</b>.
-            Upgrade to keep hunting roofs — <a href="https://buy.stripe.com/7sY14gfPl24D3Lh23vdjO0g" target="_blank" rel="noopener" style="color:#67e8f9;"><b>Starter $49.99/mo</b></a> (2 scans/mo · 25 unlocks/mo) or <a href="https://buy.stripe.com/aFa00c5aH38Hgy37nPdjO0h" target="_blank" rel="noopener" style="color:#67e8f9;"><b>Pro $99.99/mo</b></a> (8 scans/mo · 100 unlocks/mo).
+            Upgrade to keep hunting roofs — <a href="https://buy.stripe.com/7sY14gfPl24D3Lh23vdjO0g" target="_blank" rel="noopener" style="color:#67e8f9;"><b>Starter $49.99/mo</b></a> (5 scans/mo · 25 unlocks/mo) or <a href="https://buy.stripe.com/aFa00c5aH38Hgy37nPdjO0h" target="_blank" rel="noopener" style="color:#67e8f9;"><b>Pro $99.99/mo</b></a> (20 scans/mo · 100 unlocks/mo).
             Every lead is exclusive to you — nothing shared with competitors.</p>
             <p style="font-size:13px; color:#7d8fb0;">Angi charges $40–$110 for a single lead shared with 3–8 other roofers.
             Roof Scout leads are exclusive to you.</p></div>`;
@@ -1031,7 +1031,7 @@
             const dstr = q2.cycle_ends ? new Date(q2.cycle_ends * 1000).toLocaleDateString() : 'next cycle';
             alert(`You've used all ${q2.unlocks_cap || 100} Pro unlocks this cycle. They reset on ${dstr}.`);
           } else {
-            const goPro = confirm('You have used all 5 free unlocks.\n\n• Starter $49.99/mo — 2 scans/mo · 25 unlocks/mo\n• Pro $99.99/mo — 8 scans/mo · 100 unlocks/mo\n\nPress OK to open the Pro checkout, or Cancel for Starter.');
+            const goPro = confirm('You have used all 5 free unlocks.\n\n• Starter $49.99/mo — 5 scans/mo · 25 unlocks/mo\n• Pro $99.99/mo — 20 scans/mo · 100 unlocks/mo\n\nPress OK to open the Pro checkout, or Cancel for Starter.');
             window.open(goPro ? 'https://buy.stripe.com/aFa00c5aH38Hgy37nPdjO0h' : 'https://buy.stripe.com/7sY14gfPl24D3Lh23vdjO0g', '_blank', 'noopener');
           }
           renderResults(currentLeads, lastArea);
