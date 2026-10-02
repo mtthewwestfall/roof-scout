@@ -1364,7 +1364,7 @@ def street_second_opinion(api_key: str, houses: list[dict], progress=None,
                  f"Street-level check found {n} more damaged roof(s)")
 
 
-PRESCREEN_PROMPT = """You are a roof triage assistant. For EACH image in order (most are aerial views; a few may be street-level photos of the house), reply with ONLY a JSON array of integers — one per image — rating visible roof condition: 1 = pristine, 2 = normal aging only, 3 = visible wear and tear (granule loss, curling or faded shingles, moss, patching), 4 = clear damage (missing shingles, exposed underlayment, sagging), 5 = severe damage or failure. Use 0 when the roof cannot be seen at all (heavy tree cover, no building visible). Solar panels are NOT damage. Example: [2,0,4]"""
+PRESCREEN_PROMPT = """You are a roof triage assistant. For EACH image in order (most are aerial views; a few may be street-level photos of the house), reply with ONLY a JSON array of integers — one per image — rating visible roof condition: 1 = pristine, 2 = normal aging only, 3 = visible wear and tear (granule loss, curling or faded shingles, moss, patching), 4 = clear damage (missing shingles, exposed underlayment, sagging, tarp covering part of the roof), 5 = severe damage or failure (large tarped areas, collapsed sections). A blue or black tarp on a roof is emergency storm-damage covering — it IS damage, score it 4 or 5, NEVER 0. Use 0 only when no roof is visible at all (heavy tree cover, no building visible). Solar panels are NOT damage. Example: [2,0,4]"""
 
 
 def _prescreen_call(api_key: str, b64_list: list[str]) -> list[int] | None:
