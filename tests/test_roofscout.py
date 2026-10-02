@@ -952,10 +952,10 @@ class TestRotation:
         monkeypatch.setattr(pipeline, "attach_addresses",
                             lambda houses, progress=None: houses)
 
-    def test_zero_lead_scan_moves_outward(self, db, monkeypatch):
-        # Backfill guarantee: triage returns the full requested count even
-        # when nothing scores damaged; the deep grade finds them healthy,
-        # the scan finishes clean, and rotation still moves outward.
+    def test_zero_damage_widens_then_refunds(self, db, monkeypatch):
+        # Nothing scores damaged in any round: the scan widens twice
+        # (200 + 100 roofs), finds nothing worth deep-grading, records
+        # everything as seen, and refunds the scan.
         self._scan_env(monkeypatch, 300)
         monkeypatch.setattr(pipeline, "street_second_opinion",
                             lambda *a, **k: None)
@@ -964,18 +964,98 @@ class TestRotation:
                                 "material": "", "pitch": "",
                                 "obstruction": "", "damage_boxes": []}
                                for _ in imgs]
-        server._jobs["j1"] = {"status": "running"}
+        server._jobs["j1"] = {"status": "running", "owner": "u1"}
         server._run_scan("j1", "12345", 20, user_id="u1",
                          prescreener=lambda b: [1] * len(b), grader=grader)
+        assert server._jobs["j1"]["status"] == "error"
+        assert "widened area" in server._jobs["j1"]["error"]
+        assert "refunded" in server._jobs["j1"]["error"]
+        assert len(server._seen_cells("u1", "12345")) == 300
+
+    def test_widening_finds_damage_farther_out(self, db, monkeypatch):
+        # Round 1 (nearest 200 roofs): nothing damaged -> widen. Round 2
+        # (next 100): damage found -> deep grade runs there, leads come back.
+        self._scan_env(monkeypatch, 300)
+        monkeypatch.setattr(pipeline, "street_second_opinion",
+                            lambda *a, **k: None)
+        seen = [0]
+
+        def prescreener(b64s):
+            seen[0] += len(b64s)
+            v = 1 if seen[0] <= 200 else 4
+            return [v] * len(b64s)
+
+        grader = lambda imgs: [{"grade": 2, "abandoned": False,
+                                "confidence": "high", "evidence": [],
+                                "material": "", "pitch": "",
+                                "obstruction": "", "damage_boxes": []}
+                               for _ in imgs]
+        server._jobs["j1"] = {"status": "running", "owner": "u1"}
+        server._run_scan("j1", "12345", 5, user_id="u1",
+                         prescreener=prescreener, grader=grader)
+        assert server._jobs["j1"]["status"] == "done"
+        assert len(server._jobs["j1"]["leads"]) == 5
+        # Both rounds' triaged roofs count as seen.
+        assert len(server._seen_cells("u1", "12345")) == 300
+
+    def test_zero_lead_deep_grade_refunds_scan(self, app_client, db,
+                                               monkeypatch):
+        # Prescreen finds damage (no widening), but the deep grade calls
+        # every roof healthy: zero leads, zero charge.
+        r = signup(app_client, "nolead@x.com")
+        assert r.status_code == 200
+        conn = server._db()
+        try:
+            uid = conn.execute("SELECT id FROM users WHERE email=?",
+                               ("nolead@x.com",)).fetchone()[0]
+            server._consume_scan(conn, uid, False)
+            assert conn.execute("SELECT trial_scans_used FROM users"
+                                " WHERE id=?", (uid,)).fetchone()[0] == 1
+        finally:
+            conn.close()
+        self._scan_env(monkeypatch, 300)
+        monkeypatch.setattr(pipeline, "street_second_opinion",
+                            lambda *a, **k: None)
+        grader = lambda imgs: [{"grade": 4, "abandoned": False,
+                                "confidence": "high", "evidence": [],
+                                "material": "", "pitch": "",
+                                "obstruction": "", "damage_boxes": []}
+                               for _ in imgs]
+        server._jobs["j1"] = {"status": "running", "owner": uid}
+        server._run_scan("j1", "12345", 20, user_id=uid,
+                         prescreener=lambda b: [3] * len(b), grader=grader)
         assert server._jobs["j1"]["status"] == "done"
         assert server._jobs["j1"]["leads"] == []
-        assert "20 properties evaluated" in server._jobs["j1"]["msg"]
-        assert len(server._seen_cells("u1", "12345")) == 200
-        server._jobs["j2"] = {"status": "running"}
-        server._run_scan("j2", "12345", 20, user_id="u1",
-                         prescreener=lambda b: [1] * len(b), grader=grader)
-        assert server._jobs["j2"]["status"] == "done"
-        assert len(server._seen_cells("u1", "12345")) == 300
+        assert "refunded" in server._jobs["j1"]["msg"]
+        conn = server._db()
+        try:
+            used = conn.execute("SELECT trial_scans_used FROM users"
+                                " WHERE id=?", (uid,)).fetchone()[0]
+        finally:
+            conn.close()
+        assert used == 0
+
+    def test_pin_scan_widens_when_no_damage(self, db, monkeypatch):
+        # Pin-centered scans widen the same way ZIP scans do.
+        self._scan_env(monkeypatch, 300)
+        monkeypatch.setattr(pipeline, "geocode_latlng",
+                            lambda lat, lng: {"postcode": "26554",
+                                              "city": "Fairmont",
+                                              "address": "Near pin"})
+        monkeypatch.setattr(pipeline, "street_second_opinion",
+                            lambda *a, **k: None)
+        grader = lambda imgs: [{"grade": 4, "abandoned": False,
+                                "confidence": "high", "evidence": [],
+                                "material": "", "pitch": "",
+                                "obstruction": "", "damage_boxes": []}
+                               for _ in imgs]
+        server._jobs["j1"] = {"status": "running", "owner": "u1"}
+        server._run_pin_scan("j1", 39.5, -80.1, 20, user_id="u1",
+                             prescreener=lambda b: [1] * len(b),
+                             grader=grader)
+        assert server._jobs["j1"]["status"] == "error"
+        assert "widened area" in server._jobs["j1"]["error"]
+        assert len(server._seen_cells("u1", "26554")) == 300
 
     def test_lead_scan_records_every_triaged_roof(self, db, monkeypatch):
         self._scan_env(monkeypatch, 250)

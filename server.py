@@ -315,6 +315,21 @@ def _refund_scan(conn, user_id: str):
     conn.commit()
 
 
+def _refund_user_scan(user_id: str | None):
+    """Give a consumed scan back to the user. Never drops below zero;
+    no-op when there's no user (e.g. anonymous contexts)."""
+    if not user_id:
+        return
+    try:
+        conn = _db()
+        try:
+            _refund_scan(conn, user_id)
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
 def _fail_job(job_id: str, error: str):
     """Mark a scan job failed and refund the owner's consumed scan."""
     owner = None
@@ -323,15 +338,7 @@ def _fail_job(job_id: str, error: str):
         if job:
             owner = job.get("owner")
     _set_job(job_id, status="error", error=error)
-    if owner:
-        try:
-            conn = _db()
-            try:
-                _refund_scan(conn, owner)
-            finally:
-                conn.close()
-        except Exception:
-            pass
+    _refund_user_scan(owner)
 
 
 def _lead_key(lead: dict) -> str:
@@ -1309,6 +1316,63 @@ def _send_scan_complete_email(job_id: str, job: dict):
         pass
 
 
+# Automatic widening: when a scan's prescreen finds no visibly damaged
+# roofs, the scan widens by itself instead of stopping. Each extra round
+# excludes every roof already micro-scanned and sweeps farther out (the
+# grid fallback reaches ~8.8km). Bounded so one scan can't burn unlimited
+# triage budget.
+_WIDEN_ROUNDS = 3
+
+
+def _widened_prescreen(zipcode, center, count, user_id, progress,
+                       grader=None, prescreener=None):
+    """Candidate pool + damage prescreen, widening automatically.
+
+    Returns (picks, triaged_all, footprints_ok):
+      picks         houses for the deep grade (damaged-first). [] when no
+                    round found anything worth deep-grading.
+      triaged_all   every candidate micro-scanned across all rounds — the
+                    seen-rotation records these so the next scan starts
+                    even farther out.
+      footprints_ok False only if the building lookup failed every round.
+    """
+    exclude = _seen_cells(user_id, zipcode)
+    triaged_all: list[dict] = []
+    footprints_ok = True
+    for rnd in range(_WIDEN_ROUNDS):
+        cands, fok = pipeline.candidate_roofs(
+            zipcode, center, count, progress, exclude_cells=exclude)
+        if not cands and exclude and rnd == 0:
+            # Rotation already covered the known pool: one fresh pass over
+            # the standard area before widening outward.
+            cands, fok = pipeline.candidate_roofs(
+                zipcode, center, count, progress)
+            exclude = set()
+        footprints_ok = footprints_ok and fok
+        if not cands:
+            return [], triaged_all, footprints_ok
+        if GEMINI_KEY or grader or prescreener:
+            picks = pipeline.prescreen_damage(GEMINI_KEY, cands, count,
+                                              progress,
+                                              prescreener=prescreener)
+        else:
+            # Local dev without a grader: no damage signal, so nothing to
+            # widen on — keep today's stride behavior.
+            return (pipeline._stride_fallback(cands, count),
+                    [c for c in cands if "micro_score" in c],
+                    footprints_ok)
+        triaged = [c for c in cands if "micro_score" in c]
+        triaged_all.extend(triaged)
+        exclude |= {pipeline._cell_of(c["lat"], c["lng"]) for c in triaged}
+        damaged = sum(1 for c in triaged if c.get("micro_score", 0) >= 3)
+        if damaged:
+            return picks, triaged_all, footprints_ok
+        if rnd < _WIDEN_ROUNDS - 1 and progress:
+            progress("prescreen", 0, 1,
+                     "No damaged roofs in this area — widening the search…")
+    return [], triaged_all, footprints_ok
+
+
 def _run_houses(job_id: str, houses: list[dict], area: str,
                cache: tuple | None = None, grader=None, user_id=None,
                footprints_ok: bool = True):
@@ -1374,11 +1438,21 @@ def _run_houses(job_id: str, houses: list[dict], area: str,
                 h["needs_review"] = True
                 h["review_reason"] = "; ".join(reasons)
         if not houses:
+            # No leads, no charge: the deep evaluation found nothing
+            # damaged, so the scan credit goes back to the customer.
+            owner = user_id
+            if not owner:
+                with _jobs_lock:
+                    job = _jobs.get(job_id)
+                    if job:
+                        owner = job.get("owner")
+            _refund_user_scan(owner)
             _set_job(job_id, status="done", leads=[], area=area,
                      evaluated=evaluated,
                      msg=f"Done — no visibly damaged roofs found among the "
                          f"{evaluated} properties evaluated. "
-                         f"Try another ZIP.")
+                         f"No charge — your scan was refunded. "
+                         f"Try another area.")
             return
 
         # Pinpoint pass: zoomed damage close-up + repair breakdown for
@@ -1431,40 +1505,24 @@ def _run_scan(job_id: str, zipcode: str, count: int, user_id=None,
         _set_job(job_id, area=center[2])
 
         # Rotation: skip roofs already shown to this customer; when every
-        # known candidate has been shown, start a fresh pass.
-        exclude = _seen_cells(user_id, zipcode)
-        cands, footprints_ok = pipeline.candidate_roofs(
-            zipcode, center, count, progress, exclude_cells=exclude)
-        if not cands and exclude:
-            cands, footprints_ok = pipeline.candidate_roofs(
-                zipcode, center, count, progress)
+        # known candidate has been shown, start a fresh pass. The prescreen
+        # widens by itself when an area shows no damaged roofs.
+        houses, triaged_all, footprints_ok = _widened_prescreen(
+            zipcode, center, count, user_id, progress,
+            grader=grader, prescreener=prescreener)
         _set_job(job_id, footprints_ok=footprints_ok)
-        if not cands:
-            _fail_job(job_id, "No addresses found near that zip. Try another."
-                      " Your scan was refunded.")
-            return
-        # Damage pre-screen: cheap triage over the wide candidate pool,
-        # then deep-dive only the worst-looking roofs.
-        if GEMINI_KEY or grader or prescreener:
-            houses = pipeline.prescreen_damage(GEMINI_KEY, cands, count,
-                                               progress,
-                                               prescreener=prescreener)
-        else:
-            # No grader available (local dev without API key): geographic
-            # stride through the rotation-aware candidate pool.
-            houses = pipeline._stride_fallback(cands, count)
-        # Every micro-scanned roof counts as seen, lead or not, so the next
-        # scan of this ZIP triages roofs farther out.
-        triaged = [c for c in cands if "micro_score" in c]
         if not houses:
-            if triaged:
-                _record_seen(user_id, zipcode, triaged)
-                _fail_job(job_id, f"No damaged roofs among the {len(triaged)}"
-                          " roofs checked. Scan again to check roofs farther"
-                          " out. Your scan was refunded.")
+            # Every micro-scanned roof counts as seen, lead or not, so the
+            # next scan of this ZIP triages roofs farther out.
+            if triaged_all:
+                _record_seen(user_id, zipcode, triaged_all)
+                _fail_job(job_id,
+                          f"No damaged roofs found after checking "
+                          f"{len(triaged_all)} roofs across the widened "
+                          f"area. Your scan was refunded.")
             else:
                 _fail_job(job_id, "No addresses found near that zip."
-                          " Try another. Your scan was refunded.")
+                                  " Try another. Your scan was refunded.")
             return
         for h in houses:
             h["key"] = (h.get("address") or "") + "|" + h.get("postcode", "")
@@ -1474,7 +1532,7 @@ def _run_scan(job_id: str, zipcode: str, count: int, user_id=None,
         with _jobs_lock:
             ok = _jobs[job_id].get("status") == "done"
         if ok:
-            _record_seen(user_id, zipcode, triaged)
+            _record_seen(user_id, zipcode, triaged_all)
     except Exception as e:
         _fail_job(job_id, f"Scan failed: {e}. Your scan was refunded.")
 
@@ -1503,40 +1561,24 @@ def _run_pin_scan(job_id: str, lat: float, lng: float, count: int,
         _set_job(job_id, area=area)
 
         # Rotation: skip roofs already shown to this customer; when every
-        # known candidate has been shown, start a fresh pass.
-        exclude = _seen_cells(user_id, zipcode)
-        cands, footprints_ok = pipeline.candidate_roofs(
-            zipcode, center, count, progress, exclude_cells=exclude)
-        if not cands and exclude:
-            cands, footprints_ok = pipeline.candidate_roofs(
-                zipcode, center, count, progress)
+        # known candidate has been shown, start a fresh pass. The prescreen
+        # widens by itself when an area shows no damaged roofs.
+        houses, triaged_all, footprints_ok = _widened_prescreen(
+            zipcode, center, count, user_id, progress,
+            grader=grader, prescreener=prescreener)
         _set_job(job_id, footprints_ok=footprints_ok)
-        if not cands:
-            _fail_job(job_id, "No addresses found near that pin."
-                      " Try another spot. Your scan was refunded.")
-            return
-        # Damage pre-screen: cheap triage over the wide candidate pool,
-        # then deep-dive only the worst-looking roofs.
-        if GEMINI_KEY or grader or prescreener:
-            houses = pipeline.prescreen_damage(GEMINI_KEY, cands, count,
-                                               progress,
-                                               prescreener=prescreener)
-        else:
-            # No grader available (local dev without API key): geographic
-            # stride through the rotation-aware candidate pool.
-            houses = pipeline._stride_fallback(cands, count)
-        # Every micro-scanned roof counts as seen, lead or not, so the next
-        # scan near here triages roofs farther out.
-        triaged = [c for c in cands if "micro_score" in c]
         if not houses:
-            if triaged:
-                _record_seen(user_id, zipcode, triaged)
-                _fail_job(job_id, f"No damaged roofs among the {len(triaged)}"
-                          " roofs checked. Scan again to check roofs farther"
-                          " out. Your scan was refunded.")
+            # Every micro-scanned roof counts as seen, lead or not, so the
+            # next scan near here triages roofs farther out.
+            if triaged_all:
+                _record_seen(user_id, zipcode, triaged_all)
+                _fail_job(job_id,
+                          f"No damaged roofs found after checking "
+                          f"{len(triaged_all)} roofs across the widened "
+                          f"area. Your scan was refunded.")
             else:
                 _fail_job(job_id, "No addresses found near that pin."
-                          " Try another spot. Your scan was refunded.")
+                                  " Try another spot. Your scan was refunded.")
             return
         for h in houses:
             h["key"] = (h.get("address") or "") + "|" + h.get("postcode", "")
@@ -1546,7 +1588,7 @@ def _run_pin_scan(job_id: str, lat: float, lng: float, count: int,
         with _jobs_lock:
             ok = _jobs[job_id].get("status") == "done"
         if ok:
-            _record_seen(user_id, zipcode, triaged)
+            _record_seen(user_id, zipcode, triaged_all)
     except Exception as e:
         _fail_job(job_id, f"Scan failed: {e}. Your scan was refunded.")
 
