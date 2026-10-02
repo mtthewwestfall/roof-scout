@@ -837,11 +837,13 @@ class TestRotation:
         monkeypatch.setattr(pipeline, "_area_context", lambda *a: {})
         monkeypatch.setattr(pipeline, "_grid_points", lambda *a, **k: [])
         center = (39.0, -80.0, "X", "City")
-        allc = pipeline.candidate_roofs("12345", center, 5)
+        allc, ok = pipeline.candidate_roofs("12345", center, 5)
+        assert ok is True
         assert len(allc) == 10  # full pool goes to the pre-screen triage
         excl = {pipeline._cell_of(allc[0]["lat"], allc[0]["lng"])}
-        again = pipeline.candidate_roofs("12345", center, 5,
-                                         exclude_cells=excl)
+        again, ok2 = pipeline.candidate_roofs("12345", center, 5,
+                                             exclude_cells=excl)
+        assert ok2 is True
         assert len(again) == 9
         assert all(pipeline._cell_of(h["lat"], h["lng"]) not in excl
                    for h in again)
@@ -858,7 +860,8 @@ class TestRotation:
         monkeypatch.setattr(pipeline, "_grid_points",
                             lambda *a, **k: pytest.fail("grid used"))
         center = (39.1, -80.0, "X", "City")
-        out = pipeline.candidate_roofs("12345", center, 20)
+        out, ok = pipeline.candidate_roofs("12345", center, 20)
+        assert ok is True
         assert len(out) == pipeline.MICRO_SCAN_POOL == 200
         assert asked["limit"] >= 200
         far = max(abs(h["lat"] - 39.1) for h in out)
@@ -872,7 +875,8 @@ class TestRotation:
                             lambda *a, **k: houses)
         monkeypatch.setattr(pipeline, "_area_context", lambda *a: {})
         monkeypatch.setattr(pipeline, "_grid_points", lambda *a, **k: [])
-        out = pipeline.candidate_roofs("12345", (39.0, -80.0, "X", "City"), 20)
+        out, ok = pipeline.candidate_roofs("12345", (39.0, -80.0, "X", "City"), 20)
+        assert ok is True
         assert len(out) == 10
         assert sum(1 for h in out if h["vacant"]) == 5
 
@@ -885,7 +889,8 @@ class TestRotation:
             asked["n"] = n
             return []
         monkeypatch.setattr(pipeline, "_grid_points", fake_grid)
-        pipeline.candidate_roofs("12345", (39.0, -80.0, "X", "City"), 20)
+        out, ok = pipeline.candidate_roofs("12345", (39.0, -80.0, "X", "City"), 20)
+        assert ok is True  # fake returned a list: lookup 'succeeded'
         assert asked["n"] == 200
 
     def test_grid_densifies_to_requested_count(self):
@@ -914,7 +919,8 @@ class TestRotation:
         monkeypatch.setattr(pipeline, "_overpass_buildings",
                             lambda *a, **k: [])
         monkeypatch.setattr(pipeline, "_area_context", lambda *a: {})
-        out = pipeline.candidate_roofs("12345", (39.0, -80.0, "X", "City"), 20)
+        out, ok = pipeline.candidate_roofs("12345", (39.0, -80.0, "X", "City"), 20)
+        assert ok is True
         assert len(out) == 200
 
     def _scan_env(self, monkeypatch, n):
@@ -1041,8 +1047,8 @@ class TestPrescreen:
         monkeypatch.setattr(pipeline, "roof_image",
                             lambda lat, lng, z=20: (b"img", z, "esri"))
         center = (39.0, -80.0, "X", "City")
-        cands = pipeline.candidate_roofs("12345", center, 5,
-                                         progress=progress)
+        cands, _ok = pipeline.candidate_roofs("12345", center, 5,
+                                              progress=progress)
         pipeline.prescreen_damage("k", cands, 3, progress=progress,
                                   prescreener=lambda b: [3] * len(b))
         assert any(p == "candidates" for p, _, _, _ in calls)
@@ -2309,3 +2315,100 @@ class TestUSPS:
         assert server._usps_token() == "tok123"
         assert server._usps_token() == "tok123"
         assert len(calls) == 1
+
+
+class TestFootprintFallback:
+    """Overpass failure must be distinguishable from 'no buildings'."""
+
+    def test_overpass_down_raises(self, monkeypatch):
+        def boom(req, timeout=90):
+            raise TimeoutError("slow")
+        monkeypatch.setattr(pipeline.urllib.request, "urlopen", boom)
+        try:
+            pipeline._overpass_buildings("21502", 39.64, -78.78)
+            assert False, "should have raised"
+        except pipeline._OverpassDown:
+            pass
+
+    def test_overpass_empty_returns_ok(self, monkeypatch):
+        class FakeResp:
+            def read(self): return b'{"elements": []}'
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+        monkeypatch.setattr(pipeline.urllib.request, "urlopen",
+                            lambda req, timeout=90: FakeResp())
+        assert pipeline._overpass_buildings("21502", 39.64, -78.78) == []
+
+    def test_footprint_pool_flags_failure(self, monkeypatch):
+        def boom(*a, **k): raise pipeline._OverpassDown("down")
+        monkeypatch.setattr(pipeline, "_overpass_buildings", boom)
+        uniq, ok = pipeline._footprint_pool("21502", (39.64, -78.78), 120)
+        assert uniq == [] and ok is False
+
+    def test_candidate_roofs_flags_failure(self, monkeypatch):
+        def boom(*a, **k): raise pipeline._OverpassDown("down")
+        monkeypatch.setattr(pipeline, "_overpass_buildings", boom)
+        monkeypatch.setattr(pipeline, "_area_context", lambda *a: {})
+        houses, ok = pipeline.candidate_roofs(
+            "21502", (39.64, -78.78, "X", "City"), 5)
+        assert ok is False
+        assert len(houses) > 0  # grid fallback still produces candidates
+
+    def test_scan_status_exposes_footprints_ok(self, db, app_client):
+        r = signup(app_client, "fp@example.com")
+        assert r.status_code == 200
+        jid = "fpjob123456"
+        server._jobs[jid] = {"status": "done", "leads": [], "area": "X",
+                             "owner": _user_id("fp@example.com"),
+                             "footprints_ok": False}
+        r = app_client.get(f"/api/scan/{jid}")
+        assert r.status_code == 200
+        assert r.get_json()["footprints_ok"] is False
+
+
+class TestStreetSecondOpinion:
+    """Street-level re-grade of aerially-unverifiable/healthy roofs."""
+
+    def _house(self, grade, key="k1"):
+        return {"key": key, "lat": 39.0, "lng": -80.0, "grade": grade,
+                "address": "", "postcode": "12345"}
+
+    def test_noop_without_key_or_grader(self, monkeypatch):
+        houses = [self._house(0)]
+        monkeypatch.setattr(pipeline, "_mapillary_image",
+                            lambda *a: (_ for _ in ()).throw(AssertionError("no fetch")))
+        pipeline.street_second_opinion("", houses)
+        assert houses[0]["grade"] == 0
+
+    def test_street_damage_becomes_lead(self, monkeypatch):
+        monkeypatch.setattr(pipeline, "_mapillary_image", lambda *a: None)
+        monkeypatch.setattr(pipeline, "_streetview_image",
+                            lambda *a: b"fakejpg")
+        def fake_grader(b64s):
+            return [{"grade": 2, "confidence": "medium",
+                     "evidence": ["missing shingles on front slope"],
+                     "primary_material": "asphalt shingle",
+                     "pitch_estimate": "Medium", "obstruction_notes": "",
+                     "damage_boxes": [], "abandoned": False}
+                    for _ in b64s]
+        houses = [self._house(0), self._house(5, "k2"), self._house(2, "k3")]
+        pipeline.street_second_opinion("key", houses, grader=fake_grader)
+        # grade-0 and grade-5 houses re-graded from the street -> now 2
+        assert houses[0]["grade"] == 2
+        assert houses[0]["imagery"] == "streetview"
+        assert houses[0]["street_second_opinion"] is True
+        assert houses[1]["grade"] == 2
+        # the aerial grade-2 house is untouched (no street fetch needed)
+        assert houses[2]["grade"] == 2
+        assert "street_second_opinion" not in houses[2]
+
+    def test_street_healthy_stays_out(self, monkeypatch):
+        monkeypatch.setattr(pipeline, "_mapillary_image", lambda *a: None)
+        monkeypatch.setattr(pipeline, "_streetview_image",
+                            lambda *a: b"fakejpg")
+        def fake_grader(b64s):
+            return [{"grade": 4, "confidence": "high", "evidence": [],
+                     "abandoned": False} for _ in b64s]
+        houses = [self._house(0)]
+        pipeline.street_second_opinion("key", houses, grader=fake_grader)
+        assert houses[0]["grade"] == 0  # unchanged, still filtered later

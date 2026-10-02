@@ -464,6 +464,7 @@
       { attribution: '&copy; OpenStreetMap contributors' }).addTo(map);
     let markers = [];
     let currentLeads = [];
+    let lastFootprintsOk = true;
     let lastArea = '';
 
     const gradeColors = { 1: '#dc2626', 2: '#ea580c', 3: '#d97706', 4: '#16a34a', 5: '#059669', 0: '#64748b' };
@@ -578,10 +579,10 @@
         if (data.quota) setQuota(data.quota);
         if (data.cached) {
           try {
-            localStorage.setItem('rs_last_results', JSON.stringify({leads: data.payload.leads || [], area: data.payload.area}));
+            localStorage.setItem('rs_last_results', JSON.stringify({leads: data.payload.leads || [], area: data.payload.area, footprints_ok: data.payload.footprints_ok}));
             localStorage.removeItem('rs_last_job');
           } catch (e) {}
-          renderResults(data.payload.leads || [], data.payload.area);
+          renderResults(data.payload.leads || [], data.payload.area, data.payload.footprints_ok);
         }
         else {
           try {
@@ -605,7 +606,7 @@
         if (!j.ok) throw new Error(j.error || "Scan failed");
         const pm = $('progMsg');
         if (pm) pm.innerHTML = `${esc(j.msg || 'Working…')}<br><span class="dim">${j.done || 0}/${j.total || 0}</span>`;
-        if (j.status === 'done') { renderResults(j.leads || [], j.area); return; }
+        if (j.status === 'done') { renderResults(j.leads || [], j.area, j.footprints_ok); return; }
         if (j.status === 'error') throw new Error(j.error || "Scan failed");
       }
       throw new Error("Scan timed out — try again.");
@@ -704,13 +705,21 @@
     }
 
     /* ---------- results ---------- */
-    function renderResults(leads, area) {
+    function renderResults(leads, area, footprintsOk) {
       markers.forEach((m) => map.removeLayer(m));
       markers = [];
       currentLeads = leads;
       lastArea = area || '';
+      if (footprintsOk !== undefined) lastFootprintsOk = footprintsOk;
       const sidebar = $('sidebar');
       sidebar.innerHTML = "";
+
+      if (lastFootprintsOk === false) {
+        const warn = document.createElement('div');
+        warn.style.cssText = 'margin-bottom:12px;padding:10px 12px;background:rgba(251,191,36,.08);border:1px solid rgba(251,191,36,.4);border-radius:10px;color:#fcd34d;font-size:13px;';
+        warn.innerHTML = '<b>\u26a0\ufe0f Map building data was unavailable</b> — this scan swept the area on a grid instead of targeting real rooftops, so some points may be trees, roads, or empty lots. Run the scan again for footprint-targeted results.';
+        sidebar.appendChild(warn);
+      }
 
       const head = document.createElement('div');
       head.style.cssText = 'margin-bottom:12px;color:#a9c6e8;font-size:14px;';
@@ -944,14 +953,14 @@
         if (jobId) {
           const res = await fetch('/api/scan/' + encodeURIComponent(jobId));
           const j = await res.json().catch(() => ({}));
-          if (j.ok && j.status === 'done') { renderResults(j.leads || [], j.area); return; }
+          if (j.ok && j.status === 'done') { renderResults(j.leads || [], j.area, j.footprints_ok); return; }
           if (j.ok && (j.status === 'running' || j.status === 'queued')) { pollJob(jobId); return; }
           localStorage.removeItem('rs_last_job');
         }
         const raw = localStorage.getItem('rs_last_results');
         if (raw) {
           const r = JSON.parse(raw);
-          if (r && r.leads) renderResults(r.leads || [], r.area);
+          if (r && r.leads) renderResults(r.leads || [], r.area, r.footprints_ok);
         }
       } catch (e) { /* restore is best-effort */ }
     }
@@ -984,7 +993,7 @@
       if (!q) return;
       if (currentUser) currentUser.quota = q;
       const b = $('trialBanner');
-      if (q.plan === 'trial') {
+      if (q.plan === 'trial' && q.scans_left >= 0) {
         const s = q.scans_left, u = q.unlocks_left;
         b.classList.remove('hidden');
         b.classList.remove('paid');
@@ -992,11 +1001,13 @@
           <span class="plan-btns"><a class="plan-btn plan-starter" href="https://buy.stripe.com/7sY14gfPl24D3Lh23vdjO0g" target="_blank" rel="noopener">Starter — $49.99/mo</a>
           <a class="plan-btn plan-pro" href="https://buy.stripe.com/aFa00c5aH38Hgy37nPdjO0h" target="_blank" rel="noopener">Pro — $99.99/mo</a></span>`;
       } else {
-        const s = q.scans_left < 0 ? '∞' : q.scans_left;
+        const unlim = q.scans_left < 0;
+        const s = unlim ? '∞' : q.scans_left;
         const u = q.unlocks_left < 0 ? '∞' : q.unlocks_left;
+        const name = unlim ? 'Admin' : q.plan_name;
         b.classList.remove('hidden');
         b.classList.add('paid');
-        b.innerHTML = `<span>✅ <b>${esc(q.plan_name)}</b> — ${s} scan${s === 1 ? '' : 's'} · ${u} unlock${u === 1 ? '' : 's'} left this cycle</span>`;
+        b.innerHTML = `<span>✅ <b>${esc(name)}</b> — ${s} scan${s === 1 ? '' : 's'} · ${u} unlock${u === 1 ? '' : 's'} left this cycle</span>`;
       }
     }
     async function unlockLead(idx) {

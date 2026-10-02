@@ -91,6 +91,11 @@ def _vacant_flag(tags: dict) -> bool:
     return False
 
 
+class _OverpassDown(Exception):
+    """The Overpass footprint lookup itself failed (every endpoint errored
+    or timed out) — as opposed to succeeding with zero buildings found."""
+
+
 def _overpass_buildings(zipcode: str, lat0: float, lng0: float, limit: int = 120):
     """All building footprints in the area (roof-first, not address-first).
 
@@ -99,7 +104,10 @@ def _overpass_buildings(zipcode: str, lat0: float, lng0: float, limit: int = 120
     bbox query can return tens of megabytes). Buildings already carrying
     addr:housenumber + addr:street keep their address so no reverse-geocoding
     is needed later; the rest get matched to addresses after grading, only
-    for roofs that actually need repair."""
+    for roofs that actually need repair.
+
+    Raises _OverpassDown when every endpoint failed, so callers can tell
+    "map data unavailable" apart from "map data has no buildings here"."""
     r = 1.6 / 111.0  # ~1.6km half-box around the zip center
     cosla = max(0.2, math.cos(math.radians(lat0)))
     s, n = lat0 - r, lat0 + r
@@ -107,22 +115,24 @@ def _overpass_buildings(zipcode: str, lat0: float, lng0: float, limit: int = 120
     queries = [
         # postal_code areas are NOT country-scoped ("21502" is also a German
         # PLZ), so intersect with the US boundary area.
-        (f'[out:json][timeout:25];area["ISO3166-1"="US"][admin_level=2]->.us;'
+        (f'[out:json][timeout:60];area["ISO3166-1"="US"][admin_level=2]->.us;'
          f'area["postal_code"="{zipcode}"]->.a;'
          f'(way["building"](area.a)(area.us););'
          f'out center tags {limit};'),
-        (f'[out:json][timeout:25];'
+        (f'[out:json][timeout:60];'
          f'(way["building"]'
          f'({s},{w},{n},{e}););out center tags {limit};'),
     ]
+    any_ok = False
     for q in queries:
         for ep in _OVERPASS:
             try:
                 req = urllib.request.Request(
                     ep, data=q.encode(),
                     headers={**_UA, "Content-Type": "text/plain"})
-                with urllib.request.urlopen(req, timeout=45) as resp:
+                with urllib.request.urlopen(req, timeout=90) as resp:
                     data = json.loads(resp.read().decode("utf-8", "replace"))
+                any_ok = True
                 out = []
                 for el in data.get("elements", []):
                     c, t = el.get("center"), el.get("tags", {})
@@ -135,8 +145,11 @@ def _overpass_buildings(zipcode: str, lat0: float, lng0: float, limit: int = 120
                                 "vacant": _vacant_flag(t)})
                 if out:
                     return out
+                break  # endpoint answered (empty); try the next query
             except Exception:
                 continue
+    if not any_ok:
+        raise _OverpassDown(f"Overpass lookup failed for {zipcode}")
     return []
 
 
@@ -430,13 +443,19 @@ def _cell_of(lat: float, lng: float) -> tuple[int, int]:
     return (round(lat * 3000), round(lng * 3000))
 
 
-def _footprint_pool(zipcode: str, center, limit: int) -> list[dict]:
-    """Deduplicated Overpass building footprints (one per ~35m cell)."""
+def _footprint_pool(zipcode: str, center, limit: int) -> tuple[list[dict], bool]:
+    """Deduplicated Overpass building footprints (one per ~35m cell).
+
+    Returns (buildings, footprints_ok). footprints_ok=False means the
+    Overpass lookup failed outright — the caller is working without map
+    building data (blind grid fallback), NOT that the area has no buildings.
+    """
     lat0, lng0 = center[0], center[1]
     try:
         blds = _overpass_buildings(zipcode, lat0, lng0, limit=limit)
+        ok = True
     except Exception:
-        blds = []
+        blds, ok = [], False
     seen: set[tuple[int, int]] = set()
     uniq = []
     for b in blds:
@@ -446,7 +465,7 @@ def _footprint_pool(zipcode: str, center, limit: int) -> list[dict]:
         seen.add(cell)
         uniq.append(b)
     uniq.sort(key=lambda b: (b["lat"], b["lng"]))
-    return uniq
+    return uniq, ok
 
 
 def _shape_houses(buildings: list[dict], ctx: dict, city: str,
@@ -472,17 +491,20 @@ MICRO_SCAN_POOL = 200
 
 
 def candidate_roofs(zipcode: str, center, count: int, progress=None,
-                    exclude_cells=None) -> list[dict]:
+                    exclude_cells=None) -> tuple[list[dict], bool]:
     """Full deduplicated candidate pool for rotation + damage triage.
 
     Every footprint cell minus `exclude_cells` (roofs already shown to this
     customer), topped up with grid points when Overpass is thin. House
     dicts are shaped like sample_roofs() output.
+
+    Returns (houses, footprints_ok); footprints_ok=False means the building
+    lookup failed and the pool is blind grid points, not real rooftops.
     """
     exclude_cells = exclude_cells or set()
     lat0, lng0, _display, city = center
     ctx: dict = {}
-    pool = _footprint_pool(zipcode, center, MICRO_SCAN_POOL * 2)
+    pool, footprints_ok = _footprint_pool(zipcode, center, MICRO_SCAN_POOL * 2)
     if pool:
         ctx = _area_context(lat0, lng0)
     pool = [b for b in pool
@@ -512,7 +534,7 @@ def candidate_roofs(zipcode: str, center, count: int, progress=None,
         h.setdefault("area", "")
     if progress:
         progress("candidates", 1, 1, f"{len(houses)} candidate roofs")
-    return houses
+    return houses, footprints_ok
 
 
 def sample_roofs(zipcode: str, center, count: int, progress=None):
@@ -533,7 +555,7 @@ def sample_roofs(zipcode: str, center, count: int, progress=None):
 
     note()
     ctx: dict = {}
-    uniq = _footprint_pool(zipcode, center, max(count * 6, 120))
+    uniq, _footprints_ok = _footprint_pool(zipcode, center, max(count * 6, 120))
     if uniq:
         ctx = _area_context(lat0, lng0)
         # spread across the area: stride through lat-sorted footprints
@@ -1230,6 +1252,68 @@ def grade_roofs(api_key: str, houses: list[dict], progress=None,
         if v:
             h.update(v)
     return houses
+
+
+def street_second_opinion(api_key: str, houses: list[dict], progress=None,
+                          grader=None) -> None:
+    """Second opinion from the road.
+
+    Aerial imagery can't see through tree cover, and a roof that looks fine
+    from directly above can show damage on its street-facing slopes. For
+    houses the aerial grader scored 0 (unverifiable) or 4-5 (healthy from
+    above), fetch a street-level photo (Mapillary is free; Google Street
+    View's metadata check is free and the image is ~$0.007) and re-grade it.
+    Houses scoring 1-3 from the street are updated in place — grade,
+    evidence, imagery source, and image all become the street-level ones —
+    so the normal grade filter downstream picks them up as leads.
+    """
+    cands = [h for h in houses
+             if h.get("grade") in (0, 4, 5) and h.get("lat") is not None
+             and h.get("lng") is not None]
+    if not cands or (not api_key and grader is None):
+        return
+    if progress:
+        progress("streetview", 0, len(cands),
+                 f"Checking street-level views… 0/{len(cands)}")
+
+    def grab(h):
+        img = _mapillary_image(h["lat"], h["lng"])
+        src = "mapillary"
+        if not img:
+            img = _streetview_image(h["lat"], h["lng"])
+            src = "streetview"
+        if img:
+            h["_street_b64"] = base64.b64encode(img).decode()
+            h["_street_src"] = src
+        return h
+
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        list(ex.map(grab, cands))
+    with_street = [h for h in cands if h.get("_street_b64")]
+    if progress:
+        progress("streetview", len(cands) - len(with_street), len(cands),
+                 f"Grading street-level views…")
+    if not with_street:
+        return
+    tmp = [{"key": h["key"], "image_b64": h.pop("_street_b64"),
+            "imagery": h.pop("_street_src")} for h in with_street]
+    grade_roofs(api_key, tmp, progress, grader=grader)
+    n = 0
+    for h, t in zip(with_street, tmp):
+        if t.get("grade") in (1, 2, 3):
+            for k in ("grade", "confidence", "evidence", "primary_material",
+                      "pitch_estimate", "obstruction_notes", "damage_boxes",
+                      "abandoned"):
+                if k in t:
+                    h[k] = t[k]
+            h["image_b64"] = t["image_b64"]
+            h["imagery"] = t["imagery"]
+            h["zoom"] = 0
+            h["street_second_opinion"] = True
+            n += 1
+    if progress:
+        progress("streetview", len(cands), len(cands),
+                 f"Street-level check found {n} more damaged roof(s)")
 
 
 PRESCREEN_PROMPT = """You are a roof triage assistant. For EACH image in order (most are aerial views; a few may be street-level photos of the house), reply with ONLY a JSON array of integers — one per image — rating visible roof condition: 1 = pristine, 2 = normal aging only, 3 = visible wear and tear (granule loss, curling or faded shingles, moss, patching), 4 = clear damage (missing shingles, exposed underlayment, sagging), 5 = severe damage or failure. Use 0 when the roof cannot be seen at all (heavy tree cover, no building visible). Solar panels are NOT damage. Example: [2,0,4]"""

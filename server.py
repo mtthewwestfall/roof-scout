@@ -1242,7 +1242,8 @@ def _set_job(job_id: str, **kw):
 
 
 def _run_houses(job_id: str, houses: list[dict], area: str,
-               cache: tuple | None = None, grader=None, user_id=None):
+               cache: tuple | None = None, grader=None, user_id=None,
+               footprints_ok: bool = True):
     """Imagery + grading + sort tail, shared by zip and single-address scans."""
     try:
         def progress(phase, done, total, msg):
@@ -1275,6 +1276,14 @@ def _run_houses(job_id: str, houses: list[dict], area: str,
                       " Your scan was refunded.")
             return
         pipeline.grade_roofs(GEMINI_KEY, houses, progress, grader=grader)
+
+        # Street-level second opinion: aerial can't see through tree cover,
+        # and street-facing slopes can show damage invisible from above.
+        # Houses the aerial grader couldn't use (0) or called healthy (4-5)
+        # get one street photo + re-grade; new 1-3s become leads below.
+        if GEMINI_KEY or grader:
+            pipeline.street_second_opinion(GEMINI_KEY, houses, progress,
+                                           grader=grader)
 
         # Damaged only: the deep dive (pinpoint + addresses) runs solely on
         # roofs the grader flagged 1-3. Healthy (4-5) and ungradable (0)
@@ -1319,7 +1328,8 @@ def _run_houses(job_id: str, houses: list[dict], area: str,
                                    f"&viewpoint={h['lat']},{h['lng']}")
         leads = pipeline.sort_leads(houses)
         payload = {"zip": cache[0] if cache else "", "area": area,
-                   "leads": leads, "scanned_at": time.time()}
+                   "leads": leads, "scanned_at": time.time(),
+                   "footprints_ok": footprints_ok}
         if cache:
             _cache_put(cache[0], cache[1], _cacheable(payload))
             _record_seen(user_id, cache[0], houses)
@@ -1349,10 +1359,12 @@ def _run_scan(job_id: str, zipcode: str, count: int, user_id=None,
         # Rotation: skip roofs already shown to this customer; when every
         # known candidate has been shown, start a fresh pass.
         exclude = _seen_cells(user_id, zipcode)
-        cands = pipeline.candidate_roofs(zipcode, center, count, progress,
-                                         exclude_cells=exclude)
+        cands, footprints_ok = pipeline.candidate_roofs(
+            zipcode, center, count, progress, exclude_cells=exclude)
         if not cands and exclude:
-            cands = pipeline.candidate_roofs(zipcode, center, count, progress)
+            cands, footprints_ok = pipeline.candidate_roofs(
+                zipcode, center, count, progress)
+        _set_job(job_id, footprints_ok=footprints_ok)
         if not cands:
             _fail_job(job_id, "No addresses found near that zip. Try another."
                       " Your scan was refunded.")
@@ -1383,7 +1395,8 @@ def _run_scan(job_id: str, zipcode: str, count: int, user_id=None,
         for h in houses:
             h["key"] = (h.get("address") or "") + "|" + h.get("postcode", "")
         _run_houses(job_id, houses, center[2], cache=(zipcode, count),
-                    grader=grader, user_id=user_id)
+                    grader=grader, user_id=user_id,
+                    footprints_ok=footprints_ok)
         with _jobs_lock:
             ok = _jobs[job_id].get("status") == "done"
         if ok:
@@ -1461,6 +1474,7 @@ def start_scan():
                             "payload": {"zip": cached.get("zip"),
                                         "area": cached.get("area"),
                                         "leads": leads,
+                                        "footprints_ok": cached.get("footprints_ok", True),
                                         "scanned_at": cached.get("scanned_at")}})
         job_id = uuid.uuid4().hex[:12]
         with _jobs_lock:
@@ -1586,7 +1600,8 @@ def scan_status(job_id: str):
         return jsonify({"ok": False, "error": "forbidden"}), 403
     out = {"ok": True, "status": job["status"],
            "phase": job.get("phase"), "done": job.get("done", 0),
-           "total": job.get("total", 0), "msg": job.get("msg", "")}
+           "total": job.get("total", 0), "msg": job.get("msg", ""),
+           "footprints_ok": job.get("footprints_ok", True)}
     if job["status"] == "done":
         conn = _db()
         try:
