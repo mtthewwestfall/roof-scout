@@ -692,6 +692,19 @@ class TestPasswordPolicy:
         assert r.status_code == 200
 
 
+class TestLandingRoutes:
+    def test_root_serves_landing_page(self, app_client):
+        r = app_client.get("/")
+        assert r.status_code == 200
+        assert b"ROOF SCOUT" in r.data
+        assert b"roofscout_demo.mp4" in r.data
+
+    def test_app_serves_tool(self, app_client):
+        r = app_client.get("/app")
+        assert r.status_code == 200
+        assert b"Scan ZIP Code" in r.data
+
+
 class TestSecurityHeaders:
     def test_headers_present(self, app_client):
         r = app_client.get("/")
