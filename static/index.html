@@ -510,9 +510,9 @@
       }
     }
 
-    async function runSearch() {
+    async function runSearch(bodyOverride) {
       const mode = $('searchMode').value;
-      const val = $('queryInput').value.trim();
+      const val = bodyOverride ? 'pin' : $('queryInput').value.trim();
       if (!val) return;
       const btn = $('searchBtn');
       const sidebar = $('sidebar');
@@ -523,7 +523,7 @@
         const count = mode === 'single' ? 1 : parseInt($('countSel').value, 10);
         const res = await fetch('/api/scan', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ q: val, count })
+          body: JSON.stringify(bodyOverride || { q: val, count })
         });
         const data = await res.json();
         if (data.error === 'login_required') { showAuth(); return; }
@@ -609,10 +609,16 @@
           <p id="pinMsg" style="color:#dc2626; font-size:13px; min-height:18px; margin:0 0 8px;"></p>
           <div style="display:flex; gap:8px; flex-wrap:wrap;">
             <button onclick="scanFromPin()">Scan this roof</button>
+            <button onclick="scanNearPin()">Scan roofs near pin</button>
             <button class="ghost" onclick="openPinStreetView()">Street View</button>
             <button class="ghost" onclick="closePinPicker()">Cancel</button>
           </div>
+          <p class="dim" style="font-size:12px; margin:8px 0 0;">“Scan roofs near pin” checks <span id="pinCountEcho">20</span> roofs around the pin — you pick the starting point, rotation skips roofs you’ve already seen.</p>
         </div>`;
+      try {
+        const _echo = document.getElementById('pinCountEcho');
+        if (_echo) _echo.textContent = (($('countSel') || {}).value || '20');
+      } catch (e) {}
       pinMap = L.map('pinMap').setView([c.lat, c.lng], 18);
       L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
         { maxZoom: 20, attribution: 'Imagery &copy; Esri' }).addTo(pinMap);
@@ -657,6 +663,14 @@
       toggleMode();
       $('queryInput').value = q;
       runSearch();
+    }
+    function scanNearPin() {
+      if (!pinMarker) return;
+      const p = pinMarker.getLatLng();
+      const n = parseInt(($('countSel') || {}).value || '20', 10);
+      closePinPicker();
+      if ($('searchMode').value !== 'zip') { $('searchMode').value = 'zip'; toggleMode(); }
+      runSearch({ pin_lat: p.lat, pin_lng: p.lng, count: n });
     }
     function closePinPicker() {
       if (pinMap) { pinMap.remove(); pinMap = null; pinMarker = null; }

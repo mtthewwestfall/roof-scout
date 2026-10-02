@@ -1472,6 +1472,78 @@ def _run_scan(job_id: str, zipcode: str, count: int, user_id=None,
         _fail_job(job_id, f"Scan failed: {e}. Your scan was refunded.")
 
 
+def _run_pin_scan(job_id: str, lat: float, lng: float, count: int,
+                  user_id=None, grader=None, prescreener=None):
+    """Area scan centered on a user-dropped pin instead of the ZIP centroid.
+
+    Same pipeline as a ZIP scan (footprint pool -> prescreen -> deep grade),
+    but the candidate pool is distance-sorted from the pin. The seen-cells
+    rotation is keyed on the pin's reverse-geocoded postcode so pin scans
+    and ZIP scans never show the same roof twice. No result cache: a pin
+    covers a different area than the ZIP scan of the same postcode.
+    """
+    try:
+        def progress(phase, done, total, msg):
+            _set_job(job_id, phase=phase, done=done, total=total, msg=msg)
+
+        _set_job(job_id, phase="ziplookup", msg="Locating pin…")
+        geo = pipeline.geocode_latlng(lat, lng) or {}
+        zipcode = (geo.get("postcode") or "").strip()
+        city = geo.get("city") or ""
+        label = geo.get("address") or f"{lat:.5f},{lng:.5f}"
+        area = f"Near {label}" + (f", {city}" if city else "")
+        center = (lat, lng, area, city)
+        _set_job(job_id, area=area)
+
+        # Rotation: skip roofs already shown to this customer; when every
+        # known candidate has been shown, start a fresh pass.
+        exclude = _seen_cells(user_id, zipcode)
+        cands, footprints_ok = pipeline.candidate_roofs(
+            zipcode, center, count, progress, exclude_cells=exclude)
+        if not cands and exclude:
+            cands, footprints_ok = pipeline.candidate_roofs(
+                zipcode, center, count, progress)
+        _set_job(job_id, footprints_ok=footprints_ok)
+        if not cands:
+            _fail_job(job_id, "No addresses found near that pin."
+                      " Try another spot. Your scan was refunded.")
+            return
+        # Damage pre-screen: cheap triage over the wide candidate pool,
+        # then deep-dive only the worst-looking roofs.
+        if GEMINI_KEY or grader or prescreener:
+            houses = pipeline.prescreen_damage(GEMINI_KEY, cands, count,
+                                               progress,
+                                               prescreener=prescreener)
+        else:
+            # No grader available (local dev without API key): geographic
+            # stride through the rotation-aware candidate pool.
+            houses = pipeline._stride_fallback(cands, count)
+        # Every micro-scanned roof counts as seen, lead or not, so the next
+        # scan near here triages roofs farther out.
+        triaged = [c for c in cands if "micro_score" in c]
+        if not houses:
+            if triaged:
+                _record_seen(user_id, zipcode, triaged)
+                _fail_job(job_id, f"No damaged roofs among the {len(triaged)}"
+                          " roofs checked. Scan again to check roofs farther"
+                          " out. Your scan was refunded.")
+            else:
+                _fail_job(job_id, "No addresses found near that pin."
+                          " Try another spot. Your scan was refunded.")
+            return
+        for h in houses:
+            h["key"] = (h.get("address") or "") + "|" + h.get("postcode", "")
+        _run_houses(job_id, houses, area, cache=None,
+                    grader=grader, user_id=user_id,
+                    footprints_ok=footprints_ok)
+        with _jobs_lock:
+            ok = _jobs[job_id].get("status") == "done"
+        if ok:
+            _record_seen(user_id, zipcode, triaged)
+    except Exception as e:
+        _fail_job(job_id, f"Scan failed: {e}. Your scan was refunded.")
+
+
 def _run_address_scan(job_id: str, house: dict, grader=None):
     try:
         house["key"] = house["address"] + "|" + house["postcode"]
@@ -1517,6 +1589,34 @@ def start_scan():
         finally:
             conn.close()
         return q
+
+    pin_lat, pin_lng = body.get("pin_lat"), body.get("pin_lng")
+    if pin_lat is not None and pin_lng is not None:
+        # Pin-centered area scan: N roofs around a user-dropped pin.
+        # Consumes one scan like a ZIP scan (same pipeline, same cost).
+        try:
+            plat, plng = float(pin_lat), float(pin_lng)
+        except (TypeError, ValueError):
+            return jsonify({"ok": False,
+                            "error": "Bad pin coordinates."}), 400
+        if not (-90 <= plat <= 90 and -180 <= plng <= 180):
+            return jsonify({"ok": False,
+                            "error": "Coordinates out of range."}), 400
+        blocked = quota_ok()
+        if blocked:
+            return blocked
+        quota = use_scan()
+        job_id = uuid.uuid4().hex[:12]
+        with _jobs_lock:
+            _jobs[job_id] = {"status": "running", "phase": "start", "done": 0,
+                             "total": count, "msg": "Starting…",
+                             "zip": "", "single": False,
+                             "owner": user["id"], "pin": True}
+        t = threading.Thread(target=_run_pin_scan,
+                             args=(job_id, plat, plng, count, user["id"]),
+                             daemon=True)
+        t.start()
+        return jsonify({"ok": True, "job_id": job_id, "quota": quota})
 
     if re.fullmatch(r"\d{5}", raw):
         zipcode = raw
