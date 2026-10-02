@@ -542,6 +542,7 @@
         sidebar.innerHTML = `<div style="color:#dc2626; padding: 20px;"><b>Error:</b> ${esc(err.message)}</div>`;
       } finally {
         btn.disabled = false;
+        btn.innerText = ($('searchMode').value === 'single') ? 'Inspect Roof' : 'Scan ZIP Code';
       }
     }
 
