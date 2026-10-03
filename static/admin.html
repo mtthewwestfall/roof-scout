@@ -251,6 +251,21 @@
 
         <div class="panel-card" style="margin-top:20px;">
           <div class="panel-header">
+            <span>🔑 Gemini API Test</span>
+          </div>
+          <div class="panel-body">
+            <p style="color:#64748b;font-size:13px;margin:0 0 10px;">
+              Verify the API key works with a single test call (costs 1 call, not 30 like a full scan).
+            </p>
+            <div style="margin-top:10px;display:flex;gap:10px;align-items:center;">
+              <button id="geminiTestBtn" onclick="testGemini()" style="background:#8b5cf6;color:#fff;border:none;border-radius:6px;padding:8px 18px;font-weight:600;cursor:pointer;">Test API Key</button>
+              <span id="geminiTestMsg" style="font-size:13px;color:#64748b;"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel-card" style="margin-top:20px;">
+          <div class="panel-header">
             <span>🔥 Cache Prewarm</span>
           </div>
           <div class="panel-body">
@@ -513,6 +528,29 @@
     } finally {
       btn.disabled = false;
     }
+  }
+
+  async function testGemini() {
+    const btn = $('geminiTestBtn');
+    const msg = $('geminiTestMsg');
+    btn.disabled = true;
+    msg.textContent = 'Testing…';
+    msg.style.color = '#64748b';
+    try {
+      const res = await fetch('/api/admin/gemini-test', {method: 'POST'});
+      const d = await res.json();
+      if (d.ok) {
+        msg.textContent = `✅ Key works (reply: ${d.reply}, key: ${d.key_prefix})`;
+        msg.style.color = '#16a34a';
+      } else {
+        msg.textContent = `❌ Failed: ${d.error || d.http || 'unknown'}`;
+        msg.style.color = '#dc2626';
+      }
+    } catch (e) {
+      msg.textContent = `❌ Error: ${e.message}`;
+      msg.style.color = '#dc2626';
+    }
+    btn.disabled = false;
   }
 
   async function prewarmCache() {
