@@ -656,7 +656,7 @@ def tmp_fetch_imagery():
     result = {}
     # Street View
     try:
-        sv = _streetview_image(float(lat), float(lng))
+        sv = _sv_fetch(float(lat), float(lng))
         result["streetview"] = base64.b64encode(sv).decode() if sv else None
     except Exception as e:
         result["streetview_error"] = str(e)
