@@ -24,7 +24,7 @@ try:
             out.append({
                 "address": f"{num} {street}" if num and street else "",
                 "lat": float(c["lat"]),
-                "lng": float(c["lng"]),
+                "lng": float(c["lon"]),
                 "building": t.get("building", ""),
                 "vacant": pipeline._vacant_flag(t),
             })
@@ -151,6 +151,14 @@ TARP / SEVERE-DAMAGE RULE: A temporary tarp visibly covering the target roof is 
     if tarp_rule not in pipeline.PRESCREEN_PROMPT:
         pipeline.PRESCREEN_PROMPT += tarp_rule
 
+    # Make the micro-pass explicitly hunt for the highest-value damage first.
+    micro_priority_rule = """
+
+MICRO-SCAN PRIORITY: This is a search pass, not the final grade. Search every candidate for emergency tarps and likely Grade 1 failure first. A substantial roof tarp, exposed underlayment/deck, collapse, major bare roof area, or severe structural deformation should score 5 (the strongest micro signal and likely final Grade 1). A smaller/localized roof tarp or clear missing/lifted material should score 4 (likely final Grade 2). Ordinary visible wear should score 3 (likely final Grade 3). Never let a healthy roof outrank a tarp/severe-damage roof. Ignore pool covers, yard tarps, cars, tents, and ground objects.
+"""
+    if micro_priority_rule not in pipeline.PRESCREEN_PROMPT:
+        pipeline.PRESCREEN_PROMPT += micro_priority_rule
+
     _original_prescreen = pipeline.prescreen_damage
 
     def _prescreen_more_results(api_key, cands, count, progress=None, prescreener=None):
@@ -199,6 +207,147 @@ TARP / SEVERE-DAMAGE RULE: A temporary tarp visibly covering the target roof is 
 except Exception as _roofscout_tuning_error:
     print(f"Roof Scout tuning skipped: {_roofscout_tuning_error}", flush=True)
 
+# Micro-first widening: run several cheap triage rounds outward before spending
+# the deep grading budget. This makes the search order: likely 1/tarp -> 2 -> 3,
+# rather than stopping as soon as the first damaged roof is found.
+try:
+    import server
+
+    _original_widened_scan = server._do_widened_scan
+    server._WIDEN_ROUNDS = max(int(getattr(server, "_WIDEN_ROUNDS", 3)), 6)
+
+    def _micro_first_widened_scan(job_id, zipcode, center, count, user_id, progress,
+                                  area, cache, grader=None, prescreener=None):
+        if not (server.GEMINI_KEY or grader or prescreener):
+            return _original_widened_scan(
+                job_id, zipcode, center, count, user_id, progress,
+                area, cache, grader=grader, prescreener=prescreener
+            )
+
+        exclude = server._seen_cells(user_id, zipcode)
+        triaged_all = []
+        footprints_ok = True
+        rounds = int(getattr(server, "_WIDEN_ROUNDS", 6))
+
+        for rnd in range(rounds):
+            cands, fok = pipeline.candidate_roofs(
+                zipcode, center, count, progress, exclude_cells=exclude
+            )
+            if not cands:
+                break
+            footprints_ok = footprints_ok and fok
+            server._set_job(job_id, footprints_ok=footprints_ok)
+
+            pipeline.prescreen_damage(
+                server.GEMINI_KEY, cands, count, progress,
+                prescreener=prescreener
+            )
+            triaged = [c for c in cands if "micro_score" in c]
+            if not triaged:
+                break
+            triaged_all.extend(triaged)
+            exclude |= {
+                pipeline._cell_of(c["lat"], c["lng"])
+                for c in triaged
+                if c.get("lat") is not None and c.get("lng") is not None
+            }
+
+            counts = {
+                5: sum(1 for c in triaged_all if c.get("micro_score") == 5),
+                4: sum(1 for c in triaged_all if c.get("micro_score") == 4),
+                3: sum(1 for c in triaged_all if c.get("micro_score") == 3),
+            }
+            if progress:
+                progress(
+                    "prescreen", len(triaged_all), max(len(triaged_all), 1),
+                    f"Micro-search round {rnd + 1}/{rounds}: "
+                    f"{counts[5]} severe/tarp, {counts[4]} clear damage, "
+                    f"{counts[3]} aging — widening for more severe roofs…"
+                )
+
+        if not triaged_all:
+            server._fail_job(job_id,
+                             "No real roof footprints found in the widened area. "
+                             "Your scan was refunded.")
+            return False
+
+        # Micro score is intentionally ordered like the final scale:
+        # 5 ~= Grade 1, 4 ~= Grade 2, 3 ~= Grade 3. Tarp/severe signals are
+        # pushed to the front by the prescreen prompt before this sort.
+        ranked = sorted(
+            triaged_all,
+            key=lambda h: (
+                -int(h.get("micro_score", 0)),
+                bool(h.get("vacant")),
+                h.get("address", ""),
+            )
+        )
+        # De-duplicate by the same roof cell in case a source returned a
+        # slightly different coordinate on another widening round.
+        chosen = []
+        chosen_cells = set()
+        for h in ranked:
+            cell = pipeline._cell_of(h["lat"], h["lng"])
+            if cell in chosen_cells:
+                continue
+            chosen_cells.add(cell)
+            if h.get("micro_score", 0) >= 3:
+                chosen.append(h)
+            if len(chosen) >= count:
+                break
+
+        # If there are fewer than `count` damaged micro candidates, backfill
+        # with the best remaining roofs so the deep grader can verify them.
+        if len(chosen) < count:
+            for h in ranked:
+                cell = pipeline._cell_of(h["lat"], h["lng"])
+                if cell in chosen_cells:
+                    continue
+                chosen_cells.add(cell)
+                chosen.append(h)
+                if len(chosen) >= count:
+                    break
+
+        for h in chosen:
+            h["key"] = (h.get("address") or "") + "|" + h.get("postcode", "")
+
+        if progress:
+            score_counts = {
+                s: sum(1 for h in chosen if h.get("micro_score") == s)
+                for s in (5, 4, 3, 2, 1, 0)
+            }
+            progress(
+                "prescreen", len(chosen), len(chosen),
+                "Deep scan priority: "
+                f"Grade 1/tarp {score_counts[5]} → "
+                f"Grade 2 {score_counts[4]} → "
+                f"Grade 3 {score_counts[3]}."
+            )
+
+        server._run_houses(
+            job_id, chosen, area, cache=cache, grader=grader,
+            user_id=user_id, footprints_ok=footprints_ok
+        )
+        found = bool(server._jobs.get(job_id, {}).get("leads"))
+        server._record_seen(user_id, zipcode, triaged_all)
+        if not found:
+            # The micro pass found no final 1-3 roofs. We already exhausted
+            # the widened cheap search, so refund rather than pretending the
+            # original small area was representative.
+            server._refund_user_scan((server._jobs.get(job_id) or {}).get("owner"))
+            server._set_job(
+                job_id, status="done", leads=[], area=area,
+                evaluated=len(chosen),
+                msg=("Done — no visibly damaged roofs found after the "
+                     f"micro-search widened across {len(triaged_all)} roofs. "
+                     "No charge — your scan was refunded.")
+            )
+        return found
+
+    server._do_widened_scan = _micro_first_widened_scan
+except Exception as _micro_widen_error:
+    print(f"Roof Scout micro widening skipped: {_micro_widen_error}", flush=True)
+
 try:
     from flask import Request
 
@@ -228,7 +377,7 @@ except Exception as _request_tuning_error:
 try:
     import server
 
-    _SCAN_ENGINE_VERSION = "widen-v2"
+    _SCAN_ENGINE_VERSION = "micro-widen-v3"
     _original_cache_get = server._cache_get
     _original_cache_put = server._cache_put
 
@@ -245,7 +394,7 @@ try:
 
     server._cache_get = _cache_get_versioned
     server._cache_put = _cache_put_versioned
-    server._WIDEN_ROUNDS = max(int(getattr(server, "_WIDEN_ROUNDS", 3)), 4)
-    print("Roof Scout scan engine: widen-v2 cache guard active", flush=True)
+    server._WIDEN_ROUNDS = max(int(getattr(server, "_WIDEN_ROUNDS", 6)), 6)
+    print("Roof Scout scan engine: micro-widen-v3 cache guard active", flush=True)
 except Exception as _cache_tuning_error:
     print(f"Roof Scout cache tuning skipped: {_cache_tuning_error}", flush=True)
