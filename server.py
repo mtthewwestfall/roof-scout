@@ -1709,8 +1709,8 @@ def sample_lead_zip():
             # No damage flagged: fall back to first candidate as a typical roof
             picks = cands[:1]
         # Use prescreen damage score directly (1-5) instead of deep grade
-        # prescreen returns worst-first, so picks[0] is the most damaged
-        lead_src = picks[0]
+        # prescreen returns worst-first; prefer one with a resolved address
+        lead_src = next((p for p in picks if p.get("address")), picks[0])
         try:
             dmg = int(lead_src.get("micro_score", 3))
         except (TypeError, ValueError):
