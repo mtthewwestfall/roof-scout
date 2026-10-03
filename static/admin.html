@@ -248,6 +248,23 @@
             </table>
           </div>
         </div>
+
+        <div class="panel-card" style="margin-top:20px;">
+          <div class="panel-header">
+            <span>🔥 Cache Prewarm</span>
+          </div>
+          <div class="panel-body">
+            <p style="color:#64748b;font-size:13px;margin:0 0 10px;">
+              Scan ZIPs in the background and cache results for 7 days, so users get instant results.
+              Each ZIP takes ~1-2 min. Top 10 roofing metros are pre-filled.
+            </p>
+            <textarea id="prewarmZips" rows="3" style="width:100%;font-family:monospace;font-size:13px;padding:8px;border:1px solid #e2e8f0;border-radius:6px;">75201, 77001, 80201, 30301, 85001, 55401, 60601, 33601, 28201, 37201</textarea>
+            <div style="margin-top:10px;display:flex;gap:10px;align-items:center;">
+              <button id="prewarmBtn" style="background:#f97316;color:#fff;border:none;border-radius:6px;padding:8px 18px;font-weight:600;cursor:pointer;">Prewarm Cache</button>
+              <span id="prewarmMsg" style="font-size:13px;color:#64748b;"></span>
+            </div>
+          </div>
+        </div>
       </section>
     </div>
   </main>
@@ -481,6 +498,35 @@
       btn.disabled = false;
     }
   }
+
+  async function prewarmCache() {
+    const btn = $('prewarmBtn');
+    const msg = $('prewarmMsg');
+    const raw = $('prewarmZips').value || '';
+    const zips = raw.split(/[,\s]+/).map(z => z.trim()).filter(z => /^\d{5}$/.test(z));
+    if (!zips.length) { msg.textContent = '❌ Enter at least one 5-digit ZIP.'; return; }
+    if (!confirm(`Prewarm cache for ${zips.length} ZIPs?\n\nThis runs in the background (~1-2 min per ZIP).`)) return;
+    btn.disabled = true;
+    msg.innerHTML = '<span style="color:#0284c7;">⏳ Warming ' + zips.length + ' ZIPs in background…</span>';
+    try {
+      const r = await fetch('/api/admin/prewarm', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({zips})
+      });
+      const d = await r.json();
+      if (!d.ok) throw new Error(d.error || 'Failed');
+      msg.innerHTML = '<span style="color:#059669;font-weight:600;">✅ ' + esc(d.msg) + '</span>';
+    } catch (e) {
+      msg.innerHTML = '<span style="color:#dc2626;">❌ ' + esc(e.message) + '</span>';
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  document.addEventListener('DOMContentLoaded', () => {
+    const b = $('prewarmBtn');
+    if (b) b.addEventListener('click', prewarmCache);
+  });
 
   load();
 </script>
