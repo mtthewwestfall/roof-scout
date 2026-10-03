@@ -1,0 +1,57 @@
+name: Apply severe-roof hunt tuning
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  tune:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch severe-roof hunt
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('sitecustomize.py')
+          s = p.read_text()
+          changed = False
+          old = 'pipeline.MICRO_SCAN_POOL = max(getattr(pipeline, "MICRO_SCAN_POOL", 200), 500)'
+          new = 'pipeline.MICRO_SCAN_POOL = max(getattr(pipeline, "MICRO_SCAN_POOL", 200), 700)'
+          if old in s:
+              s = s.replace(old, new, 1)
+              changed = True
+          marker = '    _original_prescreen = pipeline.prescreen_damage\n'
+          rule = '''    severe_hunt_rule = """\n\nSEVERE-ROOF HUNT: This micro pass is specifically searching for real Grade 1 candidates before ordinary aging roofs. Prioritize only visible emergency/failure signals: substantial roof tarps, large exposed underlayment or decking, collapsed or sagging roof sections, large missing roof areas, major storm openings, severe deformation, or obvious emergency patches. Do NOT let ordinary fading, light discoloration, normal vents, HVAC equipment, skylights, chimneys, solar panels, shadows, or routine rooftop equipment compete with a true severe signal. If a severe signal is present, score 5 even when other parts of the roof look healthy.\n"""\n    if severe_hunt_rule not in pipeline.PRESCREEN_PROMPT:\n        pipeline.PRESCREEN_PROMPT += severe_hunt_rule\n\n'''
+          if marker in s and 'SEVERE-ROOF HUNT:' not in s:
+              s = s.replace(marker, rule + marker, 1)
+              changed = True
+          old_call = '''            pipeline.prescreen_damage(\n                server.GEMINI_KEY, cands, count, progress,\n                prescreener=prescreener\n            )\n            triaged = [c for c in cands if "micro_score" in c]\n'''
+          new_call = '''            # The footprint pool is intentionally large, but only a\n            # geographically-spread slice is sent through Gemini in each\n            # widening round. This keeps the severe hunt broad without\n            # spending the deep-scan budget on every building.\n            hunt_cands = cands[:min(len(cands), 120)]\n            pipeline.prescreen_damage(\n                server.GEMINI_KEY, hunt_cands, count, progress,\n                prescreener=prescreener\n            )\n            triaged = [c for c in hunt_cands if "micro_score" in c]\n'''
+          if old_call in s:
+              s = s.replace(old_call, new_call, 1)
+              changed = True
+          oldver = '_SCAN_ENGINE_VERSION = "micro-widen-v4-equipment"'
+          newver = '_SCAN_ENGINE_VERSION = "micro-widen-v5-severe-hunt"'
+          if oldver in s:
+              s = s.replace(oldver, newver, 1)
+              changed = True
+          if changed:
+              p.write_text(s)
+          else:
+              print('No patch needed; severe hunt tuning already present.')
+      - name: Commit tuning
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add sitecustomize.py
+          git commit -m "Prioritize severe roof hunt before normal aging"
+          git push
