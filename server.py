@@ -706,7 +706,7 @@ def tmp_grade_image():
             return jsonify({"ok": False, "error": "no_api_key"}), 500
         houses = [{"key": "tmp1", "image_b64": img_b64}]
         results = grade_roofs(api_key, houses)
-        r = results.get("tmp1", {})
+        r = results[0] if results else {}
         return jsonify({"ok": True,
             "grade": r.get("grade"),
             "confidence": r.get("confidence"),
