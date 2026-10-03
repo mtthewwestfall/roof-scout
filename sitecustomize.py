@@ -151,10 +151,19 @@ TARP / SEVERE-DAMAGE RULE: A temporary tarp visibly covering the target roof is 
     if tarp_rule not in pipeline.PRESCREEN_PROMPT:
         pipeline.PRESCREEN_PROMPT += tarp_rule
 
+    roof_equipment_rule = """
+
+ROOF-EQUIPMENT RULE: Do NOT treat normal roof fixtures as damage or as a reason to lower the roof grade. Vents, plumbing stacks, HVAC units, ducts, skylights, solar panels, chimneys, satellite dishes, and normal rooftop equipment are expected roof features. Do not count the mere presence, shape, shadow, or protrusion of these fixtures as damage. Only count a fixture when there is visible evidence of damage to the fixture itself, missing/broken material around it, failed or exposed flashing, an opening, active leakage evidence, or another clearly abnormal condition. In particular, ordinary circular roof vents must never by themselves make a roof a Grade 1, Grade 2, or Grade 3 lead.
+"""
+    if roof_equipment_rule not in pipeline.GRADE_PROMPT:
+        pipeline.GRADE_PROMPT += roof_equipment_rule
+    if roof_equipment_rule not in pipeline.PRESCREEN_PROMPT:
+        pipeline.PRESCREEN_PROMPT += roof_equipment_rule
+
     # Make the micro-pass explicitly hunt for the highest-value damage first.
     micro_priority_rule = """
 
-MICRO-SCAN PRIORITY: This is a search pass, not the final grade. Search every candidate for emergency tarps and likely Grade 1 failure first. A substantial roof tarp, exposed underlayment/deck, collapse, major bare roof area, or severe structural deformation should score 5 (the strongest micro signal and likely final Grade 1). A smaller/localized roof tarp or clear missing/lifted material should score 4 (likely final Grade 2). Ordinary visible wear should score 3 (likely final Grade 3). Never let a healthy roof outrank a tarp/severe-damage roof. Ignore pool covers, yard tarps, cars, tents, and ground objects.
+MICRO-SCAN PRIORITY: This is a search pass, not the final grade. Search every candidate for emergency tarps and likely Grade 1 failure first. A substantial roof tarp, exposed underlayment/deck, collapse, major bare roof area, or severe structural deformation should score 5 (the strongest micro signal and likely final Grade 1). A smaller/localized roof tarp or clear missing/lifted material should score 4 (likely final Grade 2). Ordinary visible wear should score 3 (likely final Grade 3). Never let a healthy roof outrank a tarp/severe-damage roof. Ignore pool covers, yard tarps, cars, tents, and ground objects. Do not score normal vents, HVAC equipment, ducts, skylights, chimneys, solar panels, or other ordinary roof fixtures as damage unless the fixture or its surrounding roof/flashing is visibly damaged.
 """
     if micro_priority_rule not in pipeline.PRESCREEN_PROMPT:
         pipeline.PRESCREEN_PROMPT += micro_priority_rule
@@ -377,7 +386,7 @@ except Exception as _request_tuning_error:
 try:
     import server
 
-    _SCAN_ENGINE_VERSION = "micro-widen-v3"
+    _SCAN_ENGINE_VERSION = "micro-widen-v4-equipment"
     _original_cache_get = server._cache_get
     _original_cache_put = server._cache_put
 
@@ -395,6 +404,6 @@ try:
     server._cache_get = _cache_get_versioned
     server._cache_put = _cache_put_versioned
     server._WIDEN_ROUNDS = max(int(getattr(server, "_WIDEN_ROUNDS", 6)), 6)
-    print("Roof Scout scan engine: micro-widen-v3 cache guard active", flush=True)
+    print("Roof Scout scan engine: micro-widen-v4-equipment cache guard active", flush=True)
 except Exception as _cache_tuning_error:
     print(f"Roof Scout cache tuning skipped: {_cache_tuning_error}", flush=True)
