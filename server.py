@@ -706,7 +706,13 @@ def tmp_grade_image():
             return jsonify({"ok": False, "error": "no_api_key"}), 500
         houses = [{"key": "tmp1", "image_b64": img_b64}]
         results = grade_roofs(api_key, houses)
-        return jsonify({"ok": True, "results": results})
+        r = results.get("tmp1", {})
+        return jsonify({"ok": True,
+            "grade": r.get("grade"),
+            "confidence": r.get("confidence"),
+            "material": r.get("primary_material"),
+            "evidence": r.get("evidence", []),
+            "likely_cause": r.get("likely_cause", "")})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
