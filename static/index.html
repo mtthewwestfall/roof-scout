@@ -352,8 +352,8 @@
         <option value="zip">ZIP Code Scan</option>
         <option value="single">Single Address</option>
       </select>
-      <div style="position:relative; flex:1;">
-        <input type="text" id="queryInput" placeholder="Enter 5-digit ZIP code (e.g. 26554)" style="width:100%;" autocomplete="off" />
+      <div style="position:relative; flex:1 1 220px; min-width:200px;">
+        <input type="text" id="queryInput" placeholder="Enter 5-digit ZIP code (e.g. 26554)" style="width:100%; box-sizing:border-box;" autocomplete="off" />
         <div id="addrSuggest" style="display:none; position:absolute; top:100%; left:0; right:0; background:#fff; border:1px solid #d4e0ee; border-top:none; border-radius:0 0 8px 8px; max-height:240px; overflow-y:auto; z-index:1000; box-shadow:0 8px 24px rgba(0,0,0,.12);"></div>
       </div>
       <select id="countSel" title="Roofs to scan">
@@ -515,7 +515,7 @@
         clearTimeout(suggestTimer);
         const mode = document.getElementById('searchMode').value;
         const val = input.value.trim();
-        if (mode !== 'single' || val.length < 4) {
+        if (mode !== 'single' || val.length < 3) {
           suggest.style.display = 'none';
           return;
         }
