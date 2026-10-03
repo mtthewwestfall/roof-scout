@@ -159,6 +159,12 @@ def _db():
         lat_r INTEGER NOT NULL, lng_r INTEGER NOT NULL,
         created_at REAL NOT NULL,
         PRIMARY KEY (user_id, zip, lat_r, lng_r))""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS user_zips (
+        user_id TEXT NOT NULL, zip TEXT NOT NULL,
+        lat REAL NOT NULL DEFAULT 0, lng REAL NOT NULL DEFAULT 0,
+        last_alert_at REAL NOT NULL DEFAULT 0,
+        created_at REAL NOT NULL,
+        PRIMARY KEY (user_id, zip))""")
     conn.execute("""CREATE TABLE IF NOT EXISTS copilot_questions (
         user_id TEXT NOT NULL, day TEXT NOT NULL,
         count INTEGER NOT NULL DEFAULT 0,
@@ -1578,6 +1584,33 @@ def _run_houses(job_id: str, houses: list[dict], area: str,
             h["streetview_url"] = ("https://www.google.com/maps/@?api=1&map_action=pano"
                                    f"&viewpoint={h['lat']},{h['lng']}")
         leads = pipeline.sort_leads(houses)
+        # Storm history on every lead: one area fetch, then per-lead filter.
+        # Non-fatal — a storm API hiccup never blocks the scan results.
+        try:
+            if leads:
+                clat = sum(h["lat"] for h in leads) / len(leads)
+                clng = sum(h["lng"] for h in leads) / len(leads)
+                area_events = _fetch_storm_events(clat, clng, radius_mi=15.0)
+                import math as _math
+                _cos = _math.cos(_math.radians(clat))
+                for h in leads:
+                    hlat, hlng = h.get("lat"), h.get("lng")
+                    if hlat is None or hlng is None:
+                        h["storm_history"] = _storm_summary([])
+                        h["storm_events"] = []
+                        continue
+                    near = []
+                    for e in area_events:
+                        dm = _math.sqrt(((e["elat"]-hlat)*69.0)**2 +
+                                        ((e["elng"]-hlng)*69.0*_cos)**2)
+                        if dm <= 10.0:
+                            near.append({**e, "distance_mi": round(dm, 1)})
+                    near.sort(key=lambda e: (e["date"], e["magnitude"] or 0),
+                              reverse=True)
+                    h["storm_events"] = near[:5]
+                    h["storm_history"] = _storm_summary(near)
+        except Exception as _se:
+            print(f"storm history attach failed: {_se}")
         payload = {"zip": cache[0] if cache else "", "area": area,
                    "leads": leads, "scanned_at": time.time(),
                    "footprints_ok": footprints_ok, "evaluated": evaluated}
@@ -1695,48 +1728,124 @@ def reverse_geocode():
 
 
 
-@app.get("/api/storm-events")
-def storm_events():
-    """Recent hail/wind events near a location (NOAA Storm Events via folkweather EDR)."""
-    from flask import request
-    import urllib.request, json, math
-    try:
-        lat = float(request.args.get("lat", "0"))
-        lng = float(request.args.get("lng", "0"))
-    except (TypeError, ValueError):
-        return jsonify({"ok": False, "error": "Invalid coordinates"}), 400
-    radius_mi = float(request.args.get("radius", "10") or 10)
-    # degrees approx: 1 deg lat ~ 69 mi, lng adjusted by cos(lat)
+STORM_HISTORY_DAYS = 730  # 2-year recency window for lead storm history
+STORM_ALERT_DAYS = 7     # alert window: storms in the last 7 days
+
+
+def _fetch_storm_events(lat: float, lng: float, radius_mi: float = 10.0,
+                        days_back: int = STORM_HISTORY_DAYS) -> list[dict]:
+    """Hail/wind events near a location (NOAA Storm Events via Folk Weather EDR).
+
+    Deduplicated (same date+type+location = one event) and limited to
+    `days_back` recency. Returns newest first.
+    """
+    import urllib.request, json, math, time, datetime
+    cutoff = time.time() - days_back * 86400
     dlat = radius_mi / 69.0
     dlng = radius_mi / (69.0 * max(0.3, math.cos(math.radians(lat))))
     bbox = f"{lng-dlng:.4f},{lat-dlat:.4f},{lng+dlng:.4f},{lat+dlat:.4f}"
     events = []
     for coll in ("hail", "wind"):
         try:
-            url = f"https://folkweather.com/edr/collections/{coll}/items?bbox={bbox}&limit=100"
+            url = (f"https://folkweather.com/edr/collections/{coll}/items"
+                   f"?bbox={bbox}&limit=100")
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(req, timeout=20) as r:
                 data = json.loads(r.read())
             for feat in data.get("features", []):
                 p = feat.get("properties", {})
                 geom = feat.get("geometry", {}).get("coordinates", [0, 0])
-                # distance in miles (haversine approx)
                 elat, elng = geom[1], geom[0]
-                dm = math.sqrt(((elat-lat)*69.0)**2 + ((elng-lng)*69.0*math.cos(math.radians(lat)))**2)
-                if dm <= radius_mi:
-                    events.append({
-                        "type": p.get("event_type"),
-                        "date": (p.get("datetime") or "")[:10],
-                        "magnitude": p.get("magnitude"),
-                        "unit": p.get("magnitude_unit"),
-                        "distance_mi": round(dm, 1),
-                        "narrative": (p.get("event_narrative") or "")[:200],
-                    })
+                dm = math.sqrt(((elat-lat)*69.0)**2 +
+                               ((elng-lng)*69.0*math.cos(math.radians(lat)))**2)
+                if dm > radius_mi:
+                    continue
+                # Parse date; skip events outside the recency window
+                dt_raw = (p.get("datetime") or "")[:10]
+                try:
+                    dt = datetime.datetime.strptime(dt_raw, "%Y-%m-%d")
+                    if dt.timestamp() < cutoff:
+                        continue
+                except (ValueError, TypeError):
+                    continue
+                events.append({
+                    "type": p.get("event_type") or coll,
+                    "date": dt_raw,
+                    "magnitude": p.get("magnitude"),
+                    "unit": p.get("magnitude_unit"),
+                    "distance_mi": round(dm, 1),
+                    "elat": round(elat, 4),
+                    "elng": round(elng, 4),
+                    "narrative": (p.get("event_narrative") or "")[:200],
+                })
         except Exception:
             pass
-    # Sort by date desc, then by magnitude desc
-    events.sort(key=lambda e: (e["date"], e["magnitude"] or 0), reverse=True)
-    return jsonify({"ok": True, "count": len(events), "events": events[:20]})
+    # Deduplicate: same type + date + ~1mi location bucket = one event
+    seen = set()
+    unique = []
+    for e in events:
+        key = (e["type"], e["date"], round(e["distance_mi"]))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(e)
+    unique.sort(key=lambda e: (e["date"], e["magnitude"] or 0), reverse=True)
+    return unique
+
+
+def _track_user_zip(user_id: str, zipcode: str):
+    """Remember a ZIP a user scanned, for storm alerts. Non-fatal."""
+    try:
+        center = pipeline.zip_center(zipcode)
+        lat, lng = (center[0], center[1]) if center else (0, 0)
+        conn = _db()
+        try:
+            conn.execute(
+                "INSERT OR IGNORE INTO user_zips (user_id, zip, lat, lng, created_at)"
+                " VALUES (?,?,?,?,?)",
+                (user_id, zipcode, lat, lng, time.time()))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
+def _storm_summary(events: list[dict]) -> dict:
+    """Compact summary for a lead card: counts + largest hail."""
+    hail = [e for e in events if "hail" in (e["type"] or "").lower()]
+    wind = [e for e in events if "wind" in (e["type"] or "").lower()]
+    largest = None
+    for e in hail:
+        try:
+            m = float(e["magnitude"] or 0)
+            if largest is None or m > largest[0]:
+                largest = (m, e["date"])
+        except (ValueError, TypeError):
+            pass
+    return {
+        "hail_events": len(hail),
+        "wind_events": len(wind),
+        "largest_hail_in": largest[0] if largest else None,
+        "largest_hail_date": largest[1] if largest else None,
+        "most_recent": events[0]["date"] if events else None,
+        "source": "NOAA Storm Events via Folk Weather",
+    }
+
+
+@app.get("/api/storm-events")
+def storm_events():
+    """Recent hail/wind events near a location (NOAA Storm Events via Folk Weather EDR)."""
+    from flask import request
+    try:
+        lat = float(request.args.get("lat", "0"))
+        lng = float(request.args.get("lng", "0"))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "Invalid coordinates"}), 400
+    radius_mi = float(request.args.get("radius", "10") or 10)
+    events = _fetch_storm_events(lat, lng, radius_mi)
+    return jsonify({"ok": True, "count": len(events), "events": events[:20],
+                    "source": "NOAA Storm Events via Folk Weather"})
 
 @app.post("/api/sample-lead-zip")
 def sample_lead_zip():
@@ -1949,6 +2058,8 @@ def start_scan():
         if blocked:
             return blocked
         quota = use_scan()
+        # Track this ZIP for storm alerts
+        _track_user_zip(user["id"], zipcode)
         # Rotation: a cached result is only served when this customer has
         # NOT seen those roofs yet; otherwise a fresh scan covers new roofs.
         seen = _seen_cells(user["id"], zipcode)
@@ -2622,7 +2733,99 @@ def _prewarm_zip(zipcode: str, count: int = 20):
             _jobs.pop(job_id, None)
 
 
-@app.post("/api/admin/prewarm")
+def _check_storm_alerts() -> dict:
+    """Check all tracked user ZIPs for recent storms; email alerts.
+
+    Returns {checked, alerts_sent}. Safe to run daily via cron.
+    """
+    import time as _time
+    checked = 0
+    sent = 0
+    conn = _db()
+    try:
+        rows = conn.execute(
+            "SELECT user_id, zip, lat, lng, last_alert_at FROM user_zips"
+            " WHERE lat != 0").fetchall()
+    finally:
+        conn.close()
+    for user_id, zipcode, lat, lng, last_alert in rows:
+        checked += 1
+        try:
+            events = _fetch_storm_events(lat, lng, radius_mi=10.0,
+                                        days_back=STORM_ALERT_DAYS)
+            # Only alert on storms newer than the last alert
+            new_events = [e for e in events
+                          if _time.mktime(_time.strptime(e["date"], "%Y-%m-%d"))
+                          > last_alert]
+            if not new_events:
+                continue
+            # Get user email
+            conn = _db()
+            try:
+                urow = conn.execute(
+                    "SELECT email, email_verified FROM users WHERE id=?",
+                    (user_id,)).fetchone()
+            finally:
+                conn.close()
+            if not urow or not urow[1]:
+                continue
+            email = urow[0]
+            n_hail = sum(1 for e in new_events if "hail" in (e["type"] or "").lower())
+            n_wind = len(new_events) - n_hail
+            biggest = ""
+            hail_events = [e for e in new_events if e.get("magnitude")]
+            if hail_events:
+                top = max(hail_events, key=lambda e: float(e["magnitude"] or 0))
+                biggest = f'Largest hail: {top["magnitude"]}in on {top["date"]}. '
+            html = f"""<p>Hi &mdash;</p>
+<p><b>Storm alert for {zipcode}:</b> {len(new_events)} storm event(s) in the last 7 days
+({n_hail} hail, {n_wind} wind). {biggest}</p>
+<p>These roofs just took a beating &mdash; and their owners don't know it yet.
+Your Roof Scout leads for {zipcode} are ready.</p>
+<p><a href="https://getveridatenow.com/app" style="display:inline-block; background:#2563eb; color:#fff; font-weight:bold; padding:12px 24px; border-radius:8px; text-decoration:none;">View Leads</a></p>
+<p style="color:#64748b;font-size:12px;">Storm data: NOAA Storm Events via Folk Weather.</p>
+<p>&mdash; Roof Scout</p>"""
+            sys.path.insert(0, "/home/hatch/workspace/skills/resend/bin")
+            from resend_api import api_post
+            r = api_post({
+                "from": "Roof Scout <hello@getveridatenow.com>",
+                "to": [email],
+                "subject": f"⛈️ Storm alert: {len(new_events)} events near {zipcode}",
+                "html": html,
+            })
+            if r.get("ok"):
+                sent += 1
+                conn = _db()
+                try:
+                    conn.execute(
+                        "UPDATE user_zips SET last_alert_at=? WHERE user_id=? AND zip=?",
+                        (_time.time(), user_id, zipcode))
+                    conn.commit()
+                finally:
+                    conn.close()
+        except Exception as e:
+            print(f"storm alert check failed for {zipcode}: {e}")
+    return {"checked": checked, "alerts_sent": sent}
+
+
+@app.post("/api/admin/storm-check")
+def admin_storm_check():
+    """Owner-only: run the storm alert check now. Also the cron target."""
+    if not _admin_ok():
+        return jsonify({"ok": False, "error": "admin_required"}), 403
+    import threading
+    result = {}
+
+    def _run():
+        try:
+            result.update(_check_storm_alerts())
+        except Exception as e:
+            result["error"] = str(e)
+        print(f"Storm check complete: {result}")
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    return jsonify({"ok": True, "msg": "Storm check running in background."})
 def admin_prewarm():
     """Owner-only: pre-warm the scan cache for a list of ZIPs.
 

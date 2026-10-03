@@ -265,6 +265,22 @@
             </div>
           </div>
         </div>
+
+        <div class="panel-card" style="margin-top:20px;">
+          <div class="panel-header">
+            <span>⛈️ Storm Alerts</span>
+          </div>
+          <div class="panel-body">
+            <p style="color:#64748b;font-size:13px;margin:0 0 10px;">
+              Check all users' tracked ZIPs for storms in the last 7 days and email alerts.
+              Runs automatically daily once the cron is set up — or trigger it now.
+            </p>
+            <div style="display:flex;gap:10px;align-items:center;">
+              <button id="stormCheckBtn" style="background:#0ea5e9;color:#fff;border:none;border-radius:6px;padding:8px 18px;font-weight:600;cursor:pointer;">Run Storm Check</button>
+              <span id="stormCheckMsg" style="font-size:13px;color:#64748b;"></span>
+            </div>
+          </div>
+        </div>
       </section>
     </div>
   </main>
@@ -526,7 +542,27 @@
   document.addEventListener('DOMContentLoaded', () => {
     const b = $('prewarmBtn');
     if (b) b.addEventListener('click', prewarmCache);
+    const s = $('stormCheckBtn');
+    if (s) s.addEventListener('click', runStormCheck);
   });
+
+  async function runStormCheck() {
+    const btn = $('stormCheckBtn');
+    const msg = $('stormCheckMsg');
+    if (!confirm('Run the storm alert check now?\n\nUsers with storms in their ZIPs (last 7 days) will get an email.')) return;
+    btn.disabled = true;
+    msg.innerHTML = '<span style="color:#0284c7;">⏳ Checking storms…</span>';
+    try {
+      const r = await fetch('/api/admin/storm-check', {method: 'POST'});
+      const d = await r.json();
+      if (!d.ok) throw new Error(d.error || 'Failed');
+      msg.innerHTML = '<span style="color:#059669;font-weight:600;">✅ ' + esc(d.msg) + '</span>';
+    } catch (e) {
+      msg.innerHTML = '<span style="color:#dc2626;">❌ ' + esc(e.message) + '</span>';
+    } finally {
+      btn.disabled = false;
+    }
+  }
 
   load();
 </script>
