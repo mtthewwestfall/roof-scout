@@ -335,20 +335,23 @@ footer a:hover{color:var(--text)}
         <p class="sec-sub">Don't just buy a list of addresses. Understand why each property deserves a closer look — with the imagery and signals to back it up.</p>
         <p class="disclaimer">Roof Scout identifies visible signals for prospecting. It is not a roof inspection, engineering assessment, or guarantee of damage.</p>
       </div>
-      <div class="flag-card" id="flagCard">
+      <div class="flag-card">
         <div class="flag-top">
-          <span class="flag-badge" id="flagPrio">HIGH PRIORITY</span>
-          <span style="font-size:12.5px;color:#9fb0c9" id="flagLive">● Live sample</span>
+          <span class="flag-badge">HIGH PRIORITY</span>
+          <span style="font-size:12.5px;color:#9fb0c9">Real find</span>
         </div>
-        <div class="flag-addr" id="flagAddr">Loading real lead…</div>
-        <div class="flag-sub" id="flagSub">Pulling from a live scan</div>
+        <div class="flag-addr">261 Henry Street</div>
+        <div class="flag-sub">Brooklyn, NY 11201 · Found by Roof Scout</div>
         <div class="score-row">
           <span class="lbl">Opportunity Score</span>
-          <span class="val" id="flagScore">–</span>
+          <span class="val">94</span>
         </div>
-        <div class="score-bar"><div class="score-fill" id="flagBar" style="width:0%"></div></div>
-        <ul class="evidence" id="flagEvidence">
-          <li><span class="ck">✓</span> Loading evidence…</li>
+        <div class="score-bar"><div class="score-fill" style="width:94%"></div></div>
+        <ul class="evidence">
+          <li><span class="ck">✓</span> Deteriorated flat membrane</li>
+          <li><span class="ck">✓</span> Blue tarp on damaged section</li>
+          <li><span class="ck">✓</span> Grade 1 of 5 — failing</li>
+          <li><span class="ck">✓</span> Estimated $15,000+ replacement</li>
         </ul>
       </div>
     </div>
@@ -551,50 +554,6 @@ footer a:hover{color:var(--text)}
 </footer>
 
 <script>
-// Proof section: load a real lead from the sample-lead API
-(function(){
-  var card = document.getElementById('flagCard');
-  if(!card) return;
-  function fallback(){
-    document.getElementById('flagAddr').textContent = '1234 Example Drive';
-    document.getElementById('flagSub').textContent = 'Residential · Illustrative example';
-    document.getElementById('flagLive').textContent = 'Example property';
-    document.getElementById('flagScore').textContent = '87';
-    document.getElementById('flagBar').style.width = '87%';
-    document.getElementById('flagEvidence').innerHTML =
-      '<li><span class="ck">\u2713</span> Visible surface wear</li>' +
-      '<li><span class="ck">\u2713</span> Possible aging indicators</li>' +
-      '<li><span class="ck">\u2713</span> Multiple areas requiring closer review</li>' +
-      '<li><span class="ck">\u2713</span> Imagery available</li>';
-  }
-  fetch('/api/sample-lead-zip', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({zip:'26554'})
-  }).then(function(r){ return r.json(); }).then(function(d){
-    if(!d.ok || !d.lead || !d.lead.address || d.lead.address === 'Address withheld'){
-      fallback(); return;
-    }
-    var lead = d.lead;
-    // grade 1-5 (1 worst) -> opportunity score 0-100 (higher = better opportunity)
-    var score = Math.max(5, Math.min(98, Math.round((6 - lead.grade) / 5 * 100)));
-    var prio = document.getElementById('flagPrio');
-    if(lead.grade <= 2){ prio.textContent = 'HIGH PRIORITY'; prio.style.background = '#DC2626'; }
-    else if(lead.grade === 3){ prio.textContent = 'MEDIUM PRIORITY'; prio.style.background = '#D97706'; }
-    else { prio.textContent = 'WATCH LIST'; prio.style.background = '#2563EB'; }
-    document.getElementById('flagAddr').textContent = lead.address;
-    document.getElementById('flagSub').textContent =
-      (lead.city ? lead.city + ', ' : '') + lead.zip + ' · Found by live scan';
-    document.getElementById('flagScore').textContent = score;
-    document.getElementById('flagBar').style.width = score + '%';
-    var ev = '<li><span class="ck">\u2713</span> ' +
-      (lead.issue || 'Visible signs of wear').replace(/</g,'&lt;') + '</li>';
-    ev += '<li><span class="ck">\u2713</span> Grade ' + lead.grade +
-      ' of 5 on visible condition</li>';
-    ev += '<li><span class="ck">\u2713</span> Aerial imagery reviewed</li>';
-    ev += '<li><span class="ck">\u2713</span> Worth a closer look</li>';
-    document.getElementById('flagEvidence').innerHTML = ev;
-  }).catch(fallback);
-})();
 
 // ZIP forms -> validate 5 digits -> hand off to the app
 function wireZipForm(formId, inputId, msgId){
