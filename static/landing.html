@@ -134,6 +134,11 @@
     </span>
   </div>
 </nav>
+
+<div style="background:linear-gradient(135deg,#1e40af,#3b82f6); color:#fff; text-align:center; padding:14px 16px; font-size:14px; font-weight:600;">
+  &#128293; Founding members: first 100 roofers lock in <b>$49.99/mo for life</b> &mdash; price goes up after.
+</div>
+
 <div class="hero">
   <div class="wrap">
     <div class="pill">AI roof-lead scanner</div>
@@ -325,6 +330,87 @@
         <div style="font-weight:700; font-size:16px; margin-bottom:6px;">Can I try it before paying?</div>
         <div style="font-size:14px; color:#5b6b82; line-height:1.7;">Yes &mdash; 1 free ZIP scan and 5 lead unlocks, no credit card required.</div>
       </div>
+    </div>
+  </div>
+</section>
+
+<section class="block tint" id="sample">
+  <div class="wrap" style="max-width:640px;">
+    <div class="kicker">Free sample</div>
+    <h2>See a real lead. Free.</h2>
+    <p class="sec-sub">This is the kind of lead Roof Scout finds every day. Enter your email to unblur the address.</p>
+    <div style="background:#fff; border:1px solid #d4e0ee; border-radius:16px; padding:28px; text-align:left; margin-top:24px;">
+      <div style="font-size:20px; font-weight:700; margin-bottom:4px; filter:blur(6px); user-select:none;" id="sampleAddr">261 Henry Street</div>
+      <div style="font-size:14px; color:#5b6b82; margin-bottom:16px;">Brooklyn, NY 11201</div>
+      <div style="display:inline-block; background:#fef2f2; color:#dc2626; font-weight:700; font-size:13px; padding:6px 14px; border-radius:999px; margin-bottom:16px;">Grade 1 &middot; Failing</div>
+      <div style="font-size:14px; line-height:1.7; color:#334155;">
+        <p style="margin:0 0 8px;"><strong>Found:</strong> Deteriorated membrane + blue tarp on damaged section</p>
+        <p style="margin:0;"><strong>Est. value:</strong> $15,000+ replacement</p>
+      </div>
+      <div id="unlockForm" style="margin-top:20px;">
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <input type="email" id="sampleEmail" placeholder="you@yourcompany.com" style="flex:1; min-width:200px; padding:12px 16px; border:1px solid #d4e0ee; border-radius:10px; font-size:15px;" />
+          <button onclick="unlockSample()" style="background:#2563eb; color:#fff; font-weight:700; padding:12px 24px; border:none; border-radius:10px; font-size:15px; cursor:pointer;">Reveal address</button>
+        </div>
+        <p id="unlockMsg" style="font-size:13px; color:#16a34a; margin:8px 0 0; min-height:18px;"></p>
+      </div>
+    </div>
+  </div>
+</section>
+<script>
+async function unlockSample() {
+  var email = document.getElementById('sampleEmail').value.trim();
+  var msg = document.getElementById('unlockMsg');
+  if (!email || email.indexOf('@') < 0) { msg.style.color = '#dc2626'; msg.textContent = 'Enter a valid email.'; return; }
+  try {
+    await fetch('/api/sample-lead', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({email: email}) });
+  } catch(e) {}
+  document.getElementById('sampleAddr').style.filter = 'none';
+  document.getElementById('unlockForm').style.display = 'none';
+  msg.style.color = '#16a34a';
+  msg.textContent = '';
+}
+</script><section class="block" id="compare">
+  <div class="wrap" style="max-width:800px;">
+    <div class="kicker">No contest</div>
+    <h2>Roof Scout vs. the marketplaces.</h2>
+    <div style="overflow-x:auto; margin-top:28px;">
+    <table style="width:100%; border-collapse:collapse; font-size:14px; text-align:left; background:#fff; border-radius:16px; overflow:hidden; border:1px solid #d4e0ee;">
+      <thead>
+        <tr style="background:#f1f5f9;">
+          <th style="padding:14px 16px;"></th>
+          <th style="padding:14px 16px; color:#2563eb; font-weight:800;">Roof Scout</th>
+          <th style="padding:14px 16px; color:#64748b;">HomeAdvisor / Angi</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-top:1px solid #e2e8f0;">
+          <td style="padding:12px 16px; font-weight:600;">Cost per lead</td>
+          <td style="padding:12px 16px; font-weight:700; color:#16a34a;">$1&ndash;$2</td>
+          <td style="padding:12px 16px; color:#64748b;">$40&ndash;$110</td>
+        </tr>
+        <tr style="border-top:1px solid #e2e8f0;">
+          <td style="padding:12px 16px; font-weight:600;">Lead exclusivity</td>
+          <td style="padding:12px 16px; font-weight:700; color:#16a34a;">Yours alone (max 3/ZIP)</td>
+          <td style="padding:12px 16px; color:#64748b;">Sold to 4&ndash;5 roofers</td>
+        </tr>
+        <tr style="border-top:1px solid #e2e8f0;">
+          <td style="padding:12px 16px; font-weight:600;">How leads are found</td>
+          <td style="padding:12px 16px; font-weight:700; color:#16a34a;">AI finds damage first</td>
+          <td style="padding:12px 16px; color:#64748b;">Homeowner happens to search</td>
+        </tr>
+        <tr style="border-top:1px solid #e2e8f0;">
+          <td style="padding:12px 16px; font-weight:600;">Damage evidence</td>
+          <td style="padding:12px 16px; font-weight:700; color:#16a34a;">Aerial + street view + AI grade</td>
+          <td style="padding:12px 16px; color:#64748b;">Name and phone number</td>
+        </tr>
+        <tr style="border-top:1px solid #e2e8f0;">
+          <td style="padding:12px 16px; font-weight:600;">Ready-to-send letter</td>
+          <td style="padding:12px 16px; font-weight:700; color:#16a34a;">Included</td>
+          <td style="padding:12px 16px; color:#64748b;">&mdash;</td>
+        </tr>
+      </tbody>
+    </table>
     </div>
   </div>
 </section><section class="block tint" id="pricing">

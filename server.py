@@ -136,7 +136,12 @@ def _db():
         account_type TEXT NOT NULL DEFAULT 'individual',
         company_name TEXT NOT NULL DEFAULT '',
         is_admin INTEGER NOT NULL DEFAULT 0,
+        zip_code TEXT NOT NULL DEFAULT '',
         created_at REAL NOT NULL)""")
+    try:
+        conn.execute("ALTER TABLE users ADD COLUMN zip_code TEXT NOT NULL DEFAULT ''")
+    except Exception:
+        pass
     conn.execute("""CREATE TABLE IF NOT EXISTS sessions (
         token TEXT PRIMARY KEY, user_id TEXT NOT NULL,
         created_at REAL NOT NULL, expires_at REAL NOT NULL)""")
@@ -1002,6 +1007,9 @@ def signup():
     password = str(body.get("password", ""))
     account_type = str(body.get("account_type", "individual")).strip().lower()
     company_name = str(body.get("company_name", "")).strip()
+    zip_code = str(body.get("zip_code", "")).strip()
+    if zip_code and (not zip_code.isdigit() or len(zip_code) != 5):
+        return jsonify({"ok": False, "error": "Enter a valid 5-digit ZIP."}), 400
     if not _valid_email(email):
         return jsonify({"ok": False, "error": "Enter a valid email address."}), 400
     if len(password) < 8:
@@ -1038,9 +1046,9 @@ def signup():
         is_admin = 1 if email in ALLOWED_TEST_EMAILS else 0
         conn.execute(
             "INSERT INTO users (id, email, pw_hash, salt, account_type,"
-            " company_name, is_admin, created_at) VALUES (?,?,?,?,?,?,?,?)",
+            " company_name, is_admin, zip_code, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
             (user_id, email, _hash_pw(password, salt), salt, account_type,
-             company_name, is_admin, time.time()))
+             company_name, is_admin, zip_code, time.time()))
         # No session until the email is confirmed: this is the trial-abuse
         # gate. A throwaway address can't consume scans/unlocks.
         token = _issue_verification_token(conn, user_id, email)
@@ -1052,6 +1060,44 @@ def signup():
             " and try again."}), 502
     return jsonify({"ok": True, "verify_sent": True, "email": email})
 
+
+
+def _welcome_scan(user_id, email, zip_code):
+    """Background welcome scan: run a scan on the user's ZIP and email top 3 leads."""
+    import time
+    time.sleep(5)  # Let verification complete
+    try:
+        from pipeline import run_scan
+        # Run a quick scan (use trial credit)
+        result = run_scan(zip_code, count=20, user_id=user_id)
+        leads = (result.get("payload", {}).get("leads") or [])[:3]
+        if not leads:
+            return
+        # Build email with top 3 leads
+        lead_html = ""
+        for i, lead in enumerate(leads, 1):
+            addr = lead.get("address", "Unknown")
+            grade = lead.get("grade", "?")
+            city = lead.get("city", "")
+            lead_html += f"<p><b>#{i}: {addr}</b><br>Grade {grade} &middot; {city}</p>"
+        html = f"""<p>Hi &mdash;</p>
+<p>Welcome to Roof Scout! I ran a scan of <b>{zip_code}</b> and found some damaged roofs already.</p>
+<p><b>Your top 3 leads:</b></p>
+{lead_html}
+<p><a href="https://getveridatenow.com/app" style="display:inline-block; background:#2563eb; color:#fff; font-weight:bold; padding:12px 24px; border-radius:8px; text-decoration:none;">View All Leads</a></p>
+<p>&mdash; Roof Scout</p>"""
+        # Send via Resend
+        import os
+        sys.path.insert(0, "/home/hatch/workspace/skills/resend/bin")
+        from resend_api import api_post
+        api_post({
+            "from": "Roof Scout <hello@getveridatenow.com>",
+            "to": [email],
+            "subject": f"Your {zip_code} scan found {len(leads)} damaged roofs",
+            "html": html
+        })
+    except Exception as e:
+        print(f"Welcome scan failed for {email}: {e}")
 
 @app.get("/api/auth/verify")
 def verify_email():
@@ -1080,6 +1126,16 @@ def verify_email():
         conn.close()
     resp = redirect("/?verified=1", code=302)
     _set_session_cookie(resp, session_token)
+    # Trigger welcome scan in background if user has a ZIP
+    try:
+        if urow and urow[1]:
+            import threading
+            t = threading.Thread(target=_welcome_scan,
+                                 args=(user_id, urow[0], urow[1]),
+                                 daemon=True)
+            t.start()
+    except Exception:
+        pass
     return resp
 
 
@@ -1611,6 +1667,28 @@ def reverse_geocode():
         return jsonify({"ok": True, "address": result})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)[:200]})
+
+
+@app.post("/api/sample-lead")
+def sample_lead_capture():
+    """Capture email from free sample lead unlock."""
+    from flask import request
+    import sqlite3, time
+    data = request.get_json(silent=True) or {}
+    email = (data.get("email") or "").strip().lower()
+    if "@" not in email:
+        return jsonify({"ok": False}), 400
+    try:
+        conn = _db()
+        conn.execute("""CREATE TABLE IF NOT EXISTS sample_leads
+            (email TEXT PRIMARY KEY, created_at REAL)""")
+        conn.execute("INSERT OR IGNORE INTO sample_leads VALUES (?, ?)",
+                     (email, time.time()))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+    return jsonify({"ok": True})
 
 @app.get("/api/address-suggest")
 def address_suggest():
