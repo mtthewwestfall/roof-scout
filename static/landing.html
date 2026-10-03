@@ -114,6 +114,11 @@
 
 
 
+<style>
+@media (max-width: 640px) {
+  .reviews-link { display: none; }
+}
+</style>
 </head>
 <body>
 <nav>
@@ -123,8 +128,10 @@
       <a href="#how">How it works</a><a href="#why">Why Roof Scout</a>
       <a href="#pricing">Pricing</a><a href="#faq">FAQ</a>
     </div>
-    <a class="btn btn-peach btn-sm" href="/app">Start free trial</a>
-      <a href="#reviews" style="font-size:14px; font-weight:600; color:#2563eb; text-decoration:none; margin-left:12px; white-space:nowrap;">&starf; Reviews</a>
+    <span style="display:inline-flex; align-items:center; gap:10px; flex-shrink:0;">
+      <a class="btn btn-peach btn-sm" href="/app" style="white-space:nowrap;">Start free trial</a>
+      <a href="#reviews" class="reviews-link" style="font-size:14px; font-weight:600; color:#2563eb; text-decoration:none; white-space:nowrap;">&starf; Reviews</a>
+    </span>
   </div>
 </nav>
 <div class="hero">
