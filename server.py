@@ -1715,6 +1715,12 @@ def sample_lead_zip():
         # Use prescreen damage score directly (1-5) instead of deep grade
         # prescreen returns worst-first; prefer one with a resolved address
         lead_src = next((p for p in picks if p.get("address")), picks[0])
+        # If still no address, try reverse-geocoding the winner
+        if not lead_src.get("address"):
+            try:
+                pipeline._resolve_address(lead_src)
+            except Exception:
+                pass
         try:
             dmg = int(lead_src.get("micro_score", 3))
         except (TypeError, ValueError):
