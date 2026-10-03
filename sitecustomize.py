@@ -1,40 +1,108 @@
 """Roof Scout runtime tuning.
 
-These patches keep the existing app architecture intact while improving
-roof coverage, severe-damage/tarp recall, and lead ordering.
+Keeps the existing app architecture intact while improving roof coverage,
+automatic widening, severe-damage/tarp recall, and lead ordering.
 """
 from __future__ import annotations
 
 try:
     import math
+    import urllib.request
+    import json
     import pipeline
 
-    # Give each scan a large real-building pool. The core pipeline remains
-    # unchanged, while this runtime hook raises the effective ceiling.
     _original_overpass = pipeline._overpass_buildings
 
-    def _overpass_more_buildings(zipcode, lat0, lng0, limit=120):
-        return _original_overpass(zipcode, lat0, lng0, limit=max(int(limit), 600))
+    def _parse_overpass_buildings(data):
+        out = []
+        for el in (data or {}).get("elements", []):
+            c, t = el.get("center"), el.get("tags", {})
+            if not c:
+                continue
+            num, street = t.get("addr:housenumber"), t.get("addr:street")
+            out.append({
+                "address": f"{num} {street}" if num and street else "",
+                "lat": float(c["lat"]),
+                "lng": float(c["lng"]),
+                "building": t.get("building", ""),
+                "vacant": pipeline._vacant_flag(t),
+            })
+        return out
 
-    pipeline._overpass_buildings = _overpass_more_buildings
+    def _wide_overpass(zipcode, lat0, lng0, limit=120):
+        """Return a large pool of real building footprints.
+
+        The core lookup covers roughly 1.6 km. If that is thin, immediately
+        add progressively wider Overpass boxes. Later scan rounds exclude
+        previously checked cells and therefore naturally move outward.
+        """
+        target = max(int(limit), 600)
+        try:
+            base = _original_overpass(zipcode, lat0, lng0, limit=target)
+        except Exception:
+            base = []
+
+        seen = {
+            pipeline._cell_of(b["lat"], b["lng"])
+            for b in base
+            if b.get("lat") is not None and b.get("lng") is not None
+        }
+        out = list(base)
+
+        for half_km in (3.2, 6.4, 10.0):
+            if len(out) >= max(target, 500):
+                break
+            r = half_km / 111.0
+            cosla = max(0.2, math.cos(math.radians(lat0)))
+            s, n = lat0 - r, lat0 + r
+            w, e = lng0 - r / cosla, lng0 + r / cosla
+            q = (
+                f'[out:json][timeout:50];'
+                f'(way["building"]({s},{w},{n},{e}););'
+                f'out center tags {max(target, 1000)};'
+            )
+            for ep in (
+                "https://overpass-api.de/api/interpreter",
+                "https://overpass.kumi.systems/api/interpreter",
+                "https://overpass.private.coffee/api/interpreter",
+            ):
+                try:
+                    req = urllib.request.Request(
+                        ep,
+                        data=q.encode(),
+                        headers={
+                            "User-Agent": "RoofScout/1.0 (residential roof condition finder)",
+                            "Content-Type": "text/plain",
+                        },
+                    )
+                    with urllib.request.urlopen(req, timeout=55) as resp:
+                        data = json.loads(resp.read().decode("utf-8", "replace"))
+                    extra = _parse_overpass_buildings(data)
+                    for b in extra:
+                        cell = pipeline._cell_of(b["lat"], b["lng"])
+                        if cell not in seen:
+                            seen.add(cell)
+                            out.append(b)
+                    if extra:
+                        break
+                except Exception:
+                    continue
+
+        return out
+
+    pipeline._overpass_buildings = _wide_overpass
     pipeline.MICRO_SCAN_POOL = max(getattr(pipeline, "MICRO_SCAN_POOL", 200), 500)
 
-    # Spread candidate roofs geographically so a dense pocket next to the ZIP
-    # centroid does not consume the whole scan. Never promote blind grid points
-    # to roof candidates: only OSM building footprints are valid scan targets.
     _original_candidates = pipeline.candidate_roofs
 
     def _spread_candidates(zipcode, center, count, progress=None, exclude_cells=None):
         houses, footprints_ok = _original_candidates(
-            zipcode, center, count, progress, exclude_cells=exclude_cells)
+            zipcode, center, count, progress, exclude_cells=exclude_cells
+        )
 
-        # A failed/empty footprint lookup must never turn into arbitrary road,
-        # forest, yard, or field coordinates that get sent to the vision model.
+        # Never promote blind grid points to roof candidates.
         if not footprints_ok:
             return [], False
-
-        # The legacy candidate function tops up with blind grid points when
-        # footprints are thin. Those points have no building tag; discard them.
         houses = [h for h in houses if h.get("building")]
         if not houses:
             return [], True
@@ -73,8 +141,6 @@ try:
 
     pipeline.candidate_roofs = _spread_candidates
 
-    # Explicitly teach triage and deep grading that temporary roof tarps are
-    # strong damage evidence. Color is irrelevant; location is what matters.
     tarp_rule = (
         "\n\nTARP / SEVERE-DAMAGE RULE: A temporary tarp visibly covering the target "
         "roof is direct evidence of active roof failure or storm repair. A "
@@ -91,8 +157,6 @@ try:
     if tarp_rule not in pipeline.PRESCREEN_PROMPT:
         pipeline.PRESCREEN_PROMPT += tarp_rule
 
-    # Preserve the existing requested scan sizes, but ensure the normal 20-roof
-    # request produces the tuned 30-result target.
     _original_prescreen = pipeline.prescreen_damage
 
     def _prescreen_more_results(api_key, cands, count, progress=None, prescreener=None):
@@ -104,8 +168,6 @@ try:
 
     pipeline.prescreen_damage = _prescreen_more_results
 
-    # Add explicit tarp metadata from the model's own evidence so the UI/API
-    # can distinguish tarp-confirmed leads from ordinary low grades.
     _original_grade_roofs = pipeline.grade_roofs
 
     def _grade_with_tarp_flags(api_key, houses, progress=None, grader=None, evidencer=None):
@@ -125,8 +187,6 @@ try:
 
     pipeline.grade_roofs = _grade_with_tarp_flags
 
-    # Keep the existing grade ordering, then prefer tarp-confirmed leads within
-    # the same review/grade bucket.
     _grade_order = getattr(pipeline, "_GRADE_ORDER", {})
 
     def _sort_leads_with_tarp_priority(houses):
@@ -143,11 +203,8 @@ try:
     pipeline.sort_leads = _sort_leads_with_tarp_priority
 
 except Exception as _roofscout_tuning_error:
-    # Never prevent the app from starting if runtime tuning cannot load.
     print(f"Roof Scout tuning skipped: {_roofscout_tuning_error}", flush=True)
 
-# Normalize the legacy 20-roof API request to the tuned 30-result scan while
-# still respecting explicit smaller selections.
 try:
     from flask import Request
 
