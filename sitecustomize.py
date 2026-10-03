@@ -92,7 +92,7 @@ try:
         return out
 
     pipeline._overpass_buildings = _wide_overpass
-    pipeline.MICRO_SCAN_POOL = max(getattr(pipeline, "MICRO_SCAN_POOL", 200), 500)
+    pipeline.MICRO_SCAN_POOL = max(getattr(pipeline, "MICRO_SCAN_POOL", 200), 700)
 
     _original_candidates = pipeline.candidate_roofs
 
@@ -167,6 +167,13 @@ MICRO-SCAN PRIORITY: This is a search pass, not the final grade. Search every ca
 """
     if micro_priority_rule not in pipeline.PRESCREEN_PROMPT:
         pipeline.PRESCREEN_PROMPT += micro_priority_rule
+
+    severe_hunt_rule = """
+
+SEVERE-ROOF HUNT: This micro pass is specifically searching for real Grade 1 candidates before ordinary aging roofs. Prioritize only visible emergency/failure signals: substantial roof tarps, large exposed underlayment or decking, collapsed or sagging roof sections, large missing roof areas, major storm openings, severe deformation, or obvious emergency patches. Do NOT let ordinary fading, light discoloration, normal vents, HVAC equipment, skylights, chimneys, solar panels, shadows, or routine rooftop equipment compete with a true severe signal. If a severe signal is present, score 5 even when other parts of the roof look healthy.
+"""
+    if severe_hunt_rule not in pipeline.PRESCREEN_PROMPT:
+        pipeline.PRESCREEN_PROMPT += severe_hunt_rule
 
     _original_prescreen = pipeline.prescreen_damage
 
@@ -247,11 +254,16 @@ try:
             footprints_ok = footprints_ok and fok
             server._set_job(job_id, footprints_ok=footprints_ok)
 
+            # The footprint pool is intentionally large, but only a
+            # geographically-spread slice is sent through Gemini in each
+            # widening round. This keeps the severe hunt broad without
+            # spending the deep-scan budget on every building.
+            hunt_cands = cands[:min(len(cands), 120)]
             pipeline.prescreen_damage(
-                server.GEMINI_KEY, cands, count, progress,
+                server.GEMINI_KEY, hunt_cands, count, progress,
                 prescreener=prescreener
             )
-            triaged = [c for c in cands if "micro_score" in c]
+            triaged = [c for c in hunt_cands if "micro_score" in c]
             if not triaged:
                 break
             triaged_all.extend(triaged)
@@ -386,7 +398,7 @@ except Exception as _request_tuning_error:
 try:
     import server
 
-    _SCAN_ENGINE_VERSION = "micro-widen-v4-equipment"
+    _SCAN_ENGINE_VERSION = "micro-widen-v5-severe-hunt"
     _original_cache_get = server._cache_get
     _original_cache_put = server._cache_put
 
