@@ -1064,13 +1064,30 @@ def signup():
 
 def _welcome_scan(user_id, email, zip_code):
     """Background welcome scan: run a scan on the user's ZIP and email top 3 leads."""
-    import time
+    import time, uuid
     time.sleep(5)  # Let verification complete
     try:
-        from pipeline import run_scan
-        # Run a quick scan (use trial credit)
-        result = run_scan(zip_code, count=20, user_id=user_id)
-        leads = (result.get("payload", {}).get("leads") or [])[:3]
+        # Use the trial scan credit; skip if none left
+        conn = _db()
+        try:
+            q = _quota(conn, user_id)
+            if q["scans_left"] <= 0:
+                return
+            _consume_scan(conn, user_id, False)
+        finally:
+            conn.close()
+        # Run a real scan job synchronously (same pipeline as manual scans)
+        job_id = uuid.uuid4().hex[:12]
+        with _jobs_lock:
+            _jobs[job_id] = {"status": "running", "phase": "start", "done": 0,
+                             "total": 20, "msg": "Starting…", "zip": zip_code,
+                             "single": False, "owner": user_id}
+        try:
+            _run_scan(job_id, zip_code, 20, user_id)
+            leads = (_jobs.get(job_id, {}).get("leads") or [])[:3]
+        finally:
+            with _jobs_lock:
+                _jobs.pop(job_id, None)
         if not leads:
             return
         # Build email with top 3 leads
@@ -1128,6 +1145,13 @@ def verify_email():
     _set_session_cookie(resp, session_token)
     # Trigger welcome scan in background if user has a ZIP
     try:
+        conn = _db()
+        try:
+            urow = conn.execute(
+                "SELECT email, zip_code FROM users WHERE id=?",
+                (user_id,)).fetchone()
+        finally:
+            conn.close()
         if urow and urow[1]:
             import threading
             t = threading.Thread(target=_welcome_scan,
@@ -2577,6 +2601,57 @@ def admin_users():
         conn.close()
     return jsonify({"ok": True, "users": users,
                     "pending_payments": pending})
+
+
+def _prewarm_zip(zipcode: str, count: int = 20):
+    """Run a full scan for a ZIP and cache the result. No user, no charge."""
+    import uuid
+    # Skip if cache is fresh
+    if _cache_get(zipcode, count):
+        return "cached"
+    job_id = uuid.uuid4().hex[:12]
+    with _jobs_lock:
+        _jobs[job_id] = {"status": "running", "phase": "start", "done": 0,
+                         "total": count, "msg": "Prewarming…",
+                         "zip": zipcode, "single": False, "owner": "system"}
+    try:
+        _run_scan(job_id, zipcode, count, None)
+        return "done" if _jobs.get(job_id, {}).get("status") == "done" else "failed"
+    finally:
+        with _jobs_lock:
+            _jobs.pop(job_id, None)
+
+
+@app.post("/api/admin/prewarm")
+def admin_prewarm():
+    """Owner-only: pre-warm the scan cache for a list of ZIPs.
+
+    Body: {"zips": ["26554", "26505"], "count": 20}
+    Runs in a background thread; each ZIP takes 1-2 minutes.
+    """
+    if not _admin_ok():
+        return jsonify({"ok": False, "error": "admin_required"}), 403
+    body = request.get_json(silent=True) or {}
+    zips = [str(z).strip() for z in (body.get("zips") or [])]
+    zips = [z for z in zips if z.isdigit() and len(z) == 5][:50]
+    count = int(body.get("count") or 20)
+    if not zips:
+        return jsonify({"ok": False, "error": "Provide a list of 5-digit ZIPs."}), 400
+
+    def _run():
+        results = {}
+        for z in zips:
+            try:
+                results[z] = _prewarm_zip(z, count)
+            except Exception as e:
+                results[z] = f"error: {e}"
+        print(f"Prewarm complete: {results}")
+
+    import threading
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    return jsonify({"ok": True, "started": len(zips),
+                    "msg": f"Warming {len(zips)} ZIPs in background."})
 
 
 @app.get("/admin")
