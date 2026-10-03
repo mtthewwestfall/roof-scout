@@ -2568,6 +2568,24 @@ def landing():
     return send_from_directory("static", "landing.html")
 
 
+
+
+@app.get("/blog")
+def blog_index():
+    return send_from_directory("static/blog", "index.html")
+
+
+@app.get("/blog/<slug>")
+def blog_post(slug):
+    safe = "".join(c for c in slug if c.isalnum() or c in "-_")
+    if not safe:
+        return "Not found", 404
+    try:
+        return send_from_directory("static/blog", safe + ".html")
+    except Exception:
+        return "Not found", 404
+
+
 @app.get("/app")
 def index():
     return send_from_directory("static", "index.html")
