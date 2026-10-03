@@ -1596,6 +1596,22 @@ def _run_address_scan(job_id: str, house: dict, grader=None):
 
 
 
+
+@app.get("/api/reverse-geocode")
+def reverse_geocode():
+    """Return the nearest real address for given lat/lng (for pin-drop)."""
+    from flask import request
+    import sys
+    sys.path.insert(0, ".")
+    try:
+        lat = float(request.args.get("lat", 0))
+        lng = float(request.args.get("lng", 0))
+        from pipeline import geocode_latlng
+        result = geocode_latlng(lat, lng)
+        return jsonify({"ok": True, "address": result})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)[:200]})
+
 @app.get("/api/address-suggest")
 def address_suggest():
     """Return address suggestions for autocomplete (proxies Nominatim)."""

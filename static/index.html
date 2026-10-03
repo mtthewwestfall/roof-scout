@@ -738,6 +738,7 @@
           <div id="pinMap" style="height:360px; border-radius:8px; z-index:0;"></div>
           <p style="font-size:13px; margin:10px 0 4px;">Drag the pin onto the exact rooftop, then scan:</p>
           <p style="margin:0 0 4px;"><b id="pinCoords"></b></p>
+          <p id="pinAddress" style="font-size:13px; margin:0 0 8px; min-height:18px;"></p>
           <p id="pinMsg" style="color:#dc2626; font-size:13px; min-height:18px; margin:0 0 8px;"></p>
           <div style="display:flex; gap:8px; flex-wrap:wrap;">
             <button onclick="scanFromPin()">Scan this roof</button>
@@ -766,10 +767,47 @@
       window.open('https://www.google.com/maps/@?api=1&map_action=pano&viewpoint='
         + p.lat.toFixed(5) + ',' + p.lng.toFixed(5), '_blank');
     }
+    let pinAddrTimer = null;
     function updatePinReadout() {
       if (!pinMarker) return;
       const p = pinMarker.getLatLng();
-      $('pinCoords').textContent = p.lat.toFixed(5) + ', ' + p.lng.toFixed(5);
+      const coords = p.lat.toFixed(5) + ', ' + p.lng.toFixed(5);
+      $('pinCoords').textContent = coords;
+      // Look up nearest address (debounced)
+      clearTimeout(pinAddrTimer);
+      const addrEl = $('pinAddress');
+      if (addrEl) addrEl.textContent = 'Looking up address…';
+      pinAddrTimer = setTimeout(async () => {
+        try {
+          const res = await fetch(`/api/reverse-geocode?lat=${p.lat}&lng=${p.lng}`);
+          const data = await res.json();
+          if (data.ok && data.address && addrEl) {
+            const a = data.address;
+            // Show real address if found, else coordinates
+            const label = (a.address && !a.address.includes(',')) ? 
+              `${a.address}, ${a.city || ''} ${a.state || ''}`.trim() : 
+              a.address;
+            addrEl.innerHTML = `📍 Nearest address: <b style="cursor:pointer; color:#2563eb;" onclick="usePinAddress('${a.address.replace(/'/g, "\\'")}')">${label}</b>`;
+            addrEl.dataset.fullAddress = a.address;
+            addrEl.dataset.lat = p.lat;
+            addrEl.dataset.lng = p.lng;
+          } else if (addrEl) {
+            addrEl.textContent = '';
+          }
+        } catch (e) {
+          if (addrEl) addrEl.textContent = '';
+        }
+      }, 600);
+    }
+    function usePinAddress(addr) {
+      // Fill the search box with the pin's address
+      if ($('searchMode').value !== 'single') {
+        $('searchMode').value = 'single';
+        toggleMode();
+      }
+      $('queryInput').value = addr;
+      closePinPicker();
+      // Don't auto-run, let them hit Inspect
     }
     async function centerPinMap() {
       const q = $('pinCenterInput').value.trim();
