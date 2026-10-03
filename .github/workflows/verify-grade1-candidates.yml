@@ -22,69 +22,41 @@ jobs:
           marker = '    def _grade_with_tarp_flags(api_key, houses, progress=None, grader=None, evidencer=None):\n'
           if '_verify_grade1_candidates' not in s:
               fn = r'''    def _verify_grade1_candidates(api_key, houses, progress=None, grader=None):
-        """Second visual check for Grade 1 candidates before they become leads.
-
-        The first grader is optimized for recall. This verifier is deliberately
-        stricter and asks for concrete failure evidence. It uses a tighter
-        aerial crop when available, and never treats ordinary rooftop equipment
-        as proof of failure.
-        """
+        """Second visual check for Grade 1 candidates before they become leads."""
         if not api_key or grader is not None:
             return houses
         targets = [h for h in houses if h.get("grade") == 1 and h.get("image_b64")]
         if not targets:
             return houses
-        schema = {
-            "type": "OBJECT",
-            "properties": {
-                "confirmed_grade_1": {"type": "BOOLEAN"},
-                "grade_if_not_1": {"type": "INTEGER"},
-                "strong_evidence": {"type": "ARRAY", "items": {"type": "STRING"}},
-                "reason": {"type": "STRING"},
-            },
-            "required": ["confirmed_grade_1", "grade_if_not_1", "strong_evidence", "reason"],
-        }
-        prompt = """You are a strict second-pass roof failure verifier. Review ONE residential roof image.
-
-Confirm Grade 1 ONLY when the image provides strong, visible evidence of an actual failing roof: a substantial roof tarp, large exposed underlayment/decking, a major missing roof section, collapsed/sagging roof structure, a major open hole, or severe structural deformation.
-
-Do NOT confirm Grade 1 for ordinary surface discoloration, generalized rough texture, light membrane wear, ponding by itself, normal patching, shadows, glare, trees, vents, plumbing stacks, HVAC units, ducts, skylights, chimneys, solar panels, satellite dishes, or other normal rooftop equipment. A normal vent is never a Grade 1 signal by itself.
-
-If there is real damage but it is not clearly failing/replacement-level, return grade_if_not_1 as 2 or 3. Use 0 only when the roof cannot be meaningfully assessed. Be conservative: this pass exists to prevent false Grade 1s while preserving obvious emergency roofs.
-
-Return ONLY the requested JSON."""
+        schema = {"type":"OBJECT","properties":{
+            "confirmed_grade_1":{"type":"BOOLEAN"},
+            "grade_if_not_1":{"type":"INTEGER"},
+            "strong_evidence":{"type":"ARRAY","items":{"type":"STRING"}},
+            "reason":{"type":"STRING"}},
+            "required":["confirmed_grade_1","grade_if_not_1","strong_evidence","reason"]}
+        prompt = """Strictly verify one roof for Grade 1. Confirm ONLY for substantial tarp, large exposed underlayment/decking, major missing roof section, collapse/sagging, major opening, or severe structural deformation. Do NOT confirm for ordinary discoloration, texture, light membrane wear, ponding alone, normal patching, shadows, glare, trees, vents, plumbing stacks, HVAC, ducts, skylights, chimneys, solar panels, satellite dishes, or other normal rooftop equipment. If real damage is present but not replacement-level, return 2 or 3. Use 0 only if the roof cannot be assessed. Return ONLY JSON."""
         for i, h in enumerate(targets):
             try:
+                import base64
                 img = None
                 if h.get("lat") is not None and h.get("lng") is not None:
-                    z = min(int(h.get("zoom") or 19) + 1, 20)
-                    img = pipeline._centered_esri(h["lat"], h["lng"], z)
+                    img = pipeline._centered_esri(h["lat"], h["lng"], min(int(h.get("zoom") or 19)+1, 20))
                 if not img:
-                    import base64
                     img = base64.b64decode(h["image_b64"])
-                import base64
-                res = pipeline._gemini_json(
-                    api_key,
-                    [{"text": prompt}, {"inline_data": {"mime_type": "image/jpeg", "data": base64.b64encode(img).decode()}}],
-                    schema,
-                    max_tokens=700,
-                )
-                if not isinstance(res, dict):
+                res = pipeline._gemini_json(api_key,[{"text":prompt},{"inline_data":{"mime_type":"image/jpeg","data":base64.b64encode(img).decode()}}],schema,max_tokens=700)
+                if not isinstance(res,dict):
                     continue
-                confirmed = bool(res.get("confirmed_grade_1"))
-                fallback = int(res.get("grade_if_not_1", 2))
-                fallback = max(0, min(3, fallback))
-                if not confirmed:
-                    h["grade"] = fallback
+                if not bool(res.get("confirmed_grade_1")):
+                    h["grade"] = max(0,min(3,int(res.get("grade_if_not_1",2))))
                     h["grade1_verified"] = False
-                    h["grade1_verification_reason"] = str(res.get("reason", ""))[:240]
+                    h["grade1_verification_reason"] = str(res.get("reason",""))[:240]
                 else:
                     h["grade1_verified"] = True
                     h["grade1_verification_reason"] = "; ".join(str(x) for x in (res.get("strong_evidence") or [])[:3])[:240]
             except Exception:
                 continue
             if progress:
-                progress("grading", i + 1, len(targets), f"Verified Grade 1 candidates… {i + 1}/{len(targets)}")
+                progress("grading",i+1,len(targets),f"Verified Grade 1 candidates… {i+1}/{len(targets)}")
         return houses
 
 '''
@@ -97,7 +69,6 @@ Return ONLY the requested JSON."""
               raise SystemExit('grade call block not found')
           s = s.replace(old, new, 1)
           s = s.replace('_SCAN_ENGINE_VERSION = "micro-widen-v5-severe-hunt"', '_SCAN_ENGINE_VERSION = "micro-widen-v6-grade1-verified"', 1)
-          s = s.replace('Roof Scout scan engine: micro-widen-v4-equipment cache guard active', 'Roof Scout scan engine: micro-widen-v6-grade1-verified cache guard active', 1)
           p.write_text(s)
           PY
       - name: Commit patch and remove workflow
