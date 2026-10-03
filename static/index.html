@@ -352,7 +352,10 @@
         <option value="zip">ZIP Code Scan</option>
         <option value="single">Single Address</option>
       </select>
-      <input type="text" id="queryInput" placeholder="Enter 5-digit ZIP code (e.g. 26554)" />
+      <div style="position:relative; flex:1;">
+        <input type="text" id="queryInput" placeholder="Enter 5-digit ZIP code (e.g. 26554)" style="width:100%;" autocomplete="off" />
+        <div id="addrSuggest" style="display:none; position:absolute; top:100%; left:0; right:0; background:#fff; border:1px solid #d4e0ee; border-top:none; border-radius:0 0 8px 8px; max-height:240px; overflow-y:auto; z-index:1000; box-shadow:0 8px 24px rgba(0,0,0,.12);"></div>
+      </div>
       <select id="countSel" title="Roofs to scan">
         <option value="10">10 roofs</option>
         <option value="20" selected>20 roofs</option>
@@ -501,6 +504,64 @@
       if (t === 'percent_off' && co.offerValue) return `a professional roof inspection at ${co.offerValue}% off`;
       if (t === 'custom' && co.offerText) return co.offerText;
       return 'a free, no-obligation roof inspection';
+    }
+
+    /* ---------- address autocomplete ---------- */
+    let suggestTimer = null;
+    function setupAutocomplete() {
+      const input = document.getElementById('queryInput');
+      const suggest = document.getElementById('addrSuggest');
+      input.addEventListener('input', () => {
+        clearTimeout(suggestTimer);
+        const mode = document.getElementById('searchMode').value;
+        const val = input.value.trim();
+        if (mode !== 'single' || val.length < 4) {
+          suggest.style.display = 'none';
+          return;
+        }
+        suggestTimer = setTimeout(async () => {
+          try {
+            const res = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=6&addressdetails=1&q=' + encodeURIComponent(val), {
+              headers: {'Accept': 'application/json'}
+            });
+            const results = await res.json();
+            if (!results.length) {
+              suggest.style.display = 'none';
+              return;
+            }
+            suggest.innerHTML = results.map((r, i) => {
+              const short = r.display_name.split(',').slice(0, 4).join(',');
+              return `<div data-idx="${i}" style="padding:10px 14px; cursor:pointer; font-size:13.5px; border-bottom:1px solid #f0f4f8;" onmouseover="this.style.background='#f2f7fb'" onmouseout="this.style.background='#fff'">${short}</div>`;
+            }).join('');
+            suggest.querySelectorAll('div[data-idx]').forEach(el => {
+              el.onclick = () => {
+                input.value = results[parseInt(el.dataset.idx)].display_name;
+                suggest.style.display = 'none';
+                input.focus();
+              };
+            });
+            // Store results for click handler
+            suggest._results = results;
+            suggest.style.display = 'block';
+          } catch (e) {
+            suggest.style.display = 'none';
+          }
+        }, 350);
+      });
+      // Hide on blur (with delay for click)
+      input.addEventListener('blur', () => {
+        setTimeout(() => { suggest.style.display = 'none'; }, 200);
+      });
+      // Hide on mode change
+      document.getElementById('searchMode').addEventListener('change', () => {
+        suggest.style.display = 'none';
+      });
+    }
+    // Init on load
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', setupAutocomplete);
+    } else {
+      setupAutocomplete();
     }
 
     /* ---------- search modes ---------- */
