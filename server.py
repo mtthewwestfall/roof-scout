@@ -647,6 +647,42 @@ def _sv_fetch(lat: float, lng: float) -> bytes | None:
 
 
 
+
+@app.post("/api/tmp/scan-address")
+def tmp_scan_address():
+    """TEMPORARY: Full single-address scan (imagery + grading)."""
+    from flask import request
+    import base64, os, sys
+    sys.path.insert(0, ".")
+    data = request.get_json(force=True)
+    lat = float(data.get("lat", 0))
+    lng = float(data.get("lng", 0))
+    try:
+        from pipeline import roof_image, grade_roofs
+        # Fetch imagery
+        img_bytes, zoom, source = roof_image(lat, lng, z=20)
+        if not img_bytes:
+            return jsonify({"ok": False, "error": "no_imagery"}), 404
+        # Grade it
+        api_key = os.environ.get("GEMINI_API_KEY", "")
+        if not api_key:
+            return jsonify({"ok": False, "error": "no_api_key"}), 500
+        img_b64 = base64.b64encode(img_bytes).decode()
+        houses = [{"id": "tmp1", "image_b64": img_b64, "lat": lat, "lng": lng}]
+        results = grade_roofs(api_key, houses)
+        # Include the image for display
+        return jsonify({
+            "ok": True,
+            "grade": results[0].get("grade") if results else None,
+            "results": results,
+            "image_b64": img_b64[:100] + "..." if len(img_b64) > 100 else img_b64,
+            "source": source,
+            "zoom": zoom
+        })
+    except Exception as e:
+        import traceback
+        return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()[:1000]}), 500
+
 @app.post("/api/tmp/grade-image")
 def tmp_grade_image():
     """TEMPORARY: Grade a single image via base64."""
