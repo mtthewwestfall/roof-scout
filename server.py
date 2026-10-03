@@ -704,7 +704,7 @@ def tmp_grade_image():
         api_key = os.environ.get("GEMINI_API_KEY", "")
         if not api_key:
             return jsonify({"ok": False, "error": "no_api_key"}), 500
-        houses = [{"id": "tmp1", "image_b64": img_b64}]
+        houses = [{"key": "tmp1", "image_b64": img_b64}]
         results = grade_roofs(api_key, houses)
         return jsonify({"ok": True, "results": results})
     except Exception as e:
