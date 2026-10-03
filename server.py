@@ -2102,7 +2102,7 @@ def start_scan():
         job_id = uuid.uuid4().hex[:12]
         with _jobs_lock:
             _jobs[job_id] = {"status": "running", "phase": "start", "done": 0,
-                             "total": count, "msg": "Starting…",
+                             "total": count, "requested": count, "msg": "Starting…",
                              "zip": "", "single": False,
                              "owner": user["id"], "pin": True}
         t = threading.Thread(target=_run_pin_scan,
@@ -2142,7 +2142,7 @@ def start_scan():
         job_id = uuid.uuid4().hex[:12]
         with _jobs_lock:
             _jobs[job_id] = {"status": "running", "phase": "start", "done": 0,
-                             "total": count, "msg": "Starting…", "zip": zipcode,
+                             "total": count, "requested": count, "msg": "Starting…", "zip": zipcode,
                              "single": False, "owner": user["id"]}
         t = threading.Thread(target=_run_scan,
                              args=(job_id, zipcode, count, user["id"]),
@@ -2437,7 +2437,7 @@ def scan_status(job_id: str):
             conn.close()
         out["area"] = job.get("area")
         out["evaluated"] = job.get("evaluated", 0)
-        out["requested"] = job.get("total", 0)
+        out["requested"] = job.get("requested", job.get("total", 0))
         out["candidates"] = job.get("candidates", 0)
         if job.get("persist_error"):
             out["persist_warning"] = (
