@@ -1604,6 +1604,15 @@ def _run_houses(job_id: str, houses: list[dict], area: str,
         # Damaged only: the deep dive (pinpoint + addresses) runs solely on
         # roofs the grader flagged 1-3. Healthy (4-5) and ungradable (0)
         # roofs are not leads and never reach the customer.
+        # But if grading FAILED (not just healthy), surface it loudly.
+        failed = sum(1 for h in houses
+                     if "grading unavailable" in str(h.get("evidence") or []))
+        if failed > len(houses) // 2 and houses:
+            _set_job(job_id, status="error",
+                     error=f"Grading failed for {failed}/{len(houses)} roofs. "
+                           f"The AI service may be down or out of quota. "
+                           f"Your scan was refunded.")
+            return
         houses = [h for h in houses if h.get("grade") in (1, 2, 3)]
         # Abandoned / vacant signals become a review flag, not a silent
         # drop: the customer sees the warning and decides whether the
@@ -2994,6 +3003,49 @@ def index():
 @app.get("/health")
 def health():
     return jsonify({"ok": True, "grader": bool(GEMINI_KEY)})
+
+
+@app.post("/api/admin/gemini-test")
+def admin_gemini_test():
+    """Single minimal Gemini call to verify the API key works.
+
+    Costs 1 API call instead of ~30 for a full scan. Admin only.
+    """
+    user, err = _require_user()
+    if err:
+        return err
+    if not user.get("is_admin"):
+        return jsonify({"ok": False, "error": "admin_required"}), 403
+    if not GEMINI_KEY:
+        return jsonify({"ok": False, "error": "no_key_configured"})
+    import urllib.request
+    payload = {
+        "contents": [{"parts": [{"text": "Reply with exactly: OK"}]}],
+        "generationConfig": {"maxOutputTokens": 10},
+    }
+    req = urllib.request.Request(
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        "gemini-3.1-flash-lite:generateContent",
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json",
+                 "x-goog-api-key": GEMINI_KEY},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode())
+        text = "".join(
+            p.get("text", "")
+            for p in data["candidates"][0]["content"]["parts"]
+            if p.get("text")
+        ).strip()
+        return jsonify({"ok": True, "reply": text,
+                        "key_prefix": GEMINI_KEY[:8] + "..."})
+    except urllib.error.HTTPError as e:
+        body = e.read().decode()[:300]
+        return jsonify({"ok": False, "http": e.code, "error": body[:200]})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)[:200]})
 
 
 if __name__ == "__main__":
