@@ -1706,28 +1706,17 @@ def sample_lead_zip():
                             "error": "No roofs found in that area."}), 400
         picks = pipeline.prescreen_damage(GEMINI_KEY, cands, 5, None)
         if not picks:
-            # No damage found in prescreen: grab images for a few and grade anyway
-            import base64 as _b64
-            for c in cands[:3]:
-                try:
-                    img, _z, _s = pipeline.roof_image(c["lat"], c["lng"], z=19)
-                    if img:
-                        c["image_b64"] = _b64.b64encode(img).decode()
-                except Exception:
-                    pass
-            picks = [c for c in cands[:3] if c.get("image_b64")] or cands[:1]
-        graded = pipeline.grade_roofs(GEMINI_KEY, picks[:3], None)
-        # Pick the worst grade
-        best = None
-        for g in graded:
-            try:
-                gr = int(g.get("grade", 5))
-            except (TypeError, ValueError):
-                gr = 5
-            if best is None or gr < best[0]:
-                best = (gr, g)
-        lead_src = best[1] if best else picks[0]
-        grade = best[0] if best else 3
+            # No damage flagged: fall back to first candidate as a typical roof
+            picks = cands[:1]
+        # Use prescreen damage score directly (1-5) instead of deep grade
+        # prescreen returns worst-first, so picks[0] is the most damaged
+        lead_src = picks[0]
+        try:
+            dmg = int(lead_src.get("micro_score", 3))
+        except (TypeError, ValueError):
+            dmg = 3
+        # Convert prescreen 1-5 damage to 1-5 grade (invert: 5 dmg = 1 grade)
+        grade = max(1, min(5, 6 - dmg))
         lead = {
             "address": lead_src.get("address") or "Address withheld",
             "city": lead_src.get("city") or center[3] or "",
