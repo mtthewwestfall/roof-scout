@@ -1,7 +1,8 @@
 """Roof Scout runtime tuning.
 
 Keeps the existing app architecture intact while improving roof coverage,
-automatic widening, severe-damage/tarp recall, and lead ordering.
+automatic widening, severe-damage/tarp recall, lead ordering, and cache
+invalidation after scan-engine changes.
 """
 from __future__ import annotations
 
@@ -220,3 +221,31 @@ try:
     Request.get_json = _get_json_tuned
 except Exception as _request_tuning_error:
     print(f"Roof Scout request tuning skipped: {_request_tuning_error}", flush=True)
+
+# Cache/version guard: older cached ZIP results can contain the exact
+# "19 properties evaluated" behavior the new widening engine is meant to
+# replace. Only reuse results produced by this scan engine version.
+try:
+    import server
+
+    _SCAN_ENGINE_VERSION = "widen-v2"
+    _original_cache_get = server._cache_get
+    _original_cache_put = server._cache_put
+
+    def _cache_get_versioned(zipcode, count):
+        payload = _original_cache_get(zipcode, count)
+        if not payload or payload.get("_scan_engine_version") != _SCAN_ENGINE_VERSION:
+            return None
+        return payload
+
+    def _cache_put_versioned(zipcode, count, payload):
+        payload = dict(payload)
+        payload["_scan_engine_version"] = _SCAN_ENGINE_VERSION
+        return _original_cache_put(zipcode, count, payload)
+
+    server._cache_get = _cache_get_versioned
+    server._cache_put = _cache_put_versioned
+    server._WIDEN_ROUNDS = max(int(getattr(server, "_WIDEN_ROUNDS", 3)), 4)
+    print("Roof Scout scan engine: widen-v2 cache guard active", flush=True)
+except Exception as _cache_tuning_error:
+    print(f"Roof Scout cache tuning skipped: {_cache_tuning_error}", flush=True)
