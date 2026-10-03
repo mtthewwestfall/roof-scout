@@ -1669,6 +1669,80 @@ def reverse_geocode():
         return jsonify({"ok": False, "error": str(e)[:200]})
 
 
+
+@app.post("/api/sample-lead-zip")
+def sample_lead_zip():
+    """Return a sample lead from the visitor's ZIP (cached per ZIP)."""
+    from flask import request
+    import sqlite3, time, json
+    data = request.get_json(silent=True) or {}
+    zipcode = str(data.get("zip", "")).strip()
+    if not zipcode.isdigit() or len(zipcode) != 5:
+        return jsonify({"ok": False, "error": "Enter a valid 5-digit ZIP."}), 400
+    conn = _db()
+    try:
+        conn.execute("""CREATE TABLE IF NOT EXISTS sample_zip_cache
+            (zip TEXT PRIMARY KEY, lead_json TEXT, created_at REAL)""")
+        conn.commit()
+        row = conn.execute("SELECT lead_json FROM sample_zip_cache WHERE zip=?",
+                           (zipcode,)).fetchone()
+        if row:
+            conn.close()
+            return jsonify({"ok": True, "cached": True,
+                            "lead": json.loads(row[0])})
+    except Exception:
+        pass
+    # Not cached: run a lightweight scan (15 candidates, grade top 3)
+    try:
+        center = pipeline.zip_center(zipcode)
+        if not center:
+            conn.close()
+            return jsonify({"ok": False,
+                            "error": "Couldn't find that ZIP."}), 400
+        cands, _ = pipeline.candidate_roofs(zipcode, center, 15, None)
+        if not cands:
+            conn.close()
+            return jsonify({"ok": False,
+                            "error": "No roofs found in that area."}), 400
+        picks = pipeline.prescreen_damage(GEMINI_KEY, cands, 5, None)
+        if not picks:
+            # No damage found: use the first candidate as a "typical roof"
+            picks = cands[:1]
+        graded = pipeline.grade_roofs(GEMINI_KEY, picks[:3], None)
+        # Pick the worst grade
+        best = None
+        for g in graded:
+            try:
+                gr = int(g.get("grade", 5))
+            except (TypeError, ValueError):
+                gr = 5
+            if best is None or gr < best[0]:
+                best = (gr, g)
+        lead_src = best[1] if best else picks[0]
+        grade = best[0] if best else 3
+        lead = {
+            "address": lead_src.get("address") or "Address withheld",
+            "city": lead_src.get("city") or center[3] or "",
+            "zip": zipcode,
+            "grade": grade,
+            "issue": (lead_src.get("issue") or lead_src.get("damage") or
+                      "Visible wear detected")[:120],
+        }
+        try:
+            conn.execute("INSERT OR REPLACE INTO sample_zip_cache VALUES (?,?,?)",
+                         (zipcode, json.dumps(lead), time.time()))
+            conn.commit()
+        except Exception:
+            pass
+        conn.close()
+        return jsonify({"ok": True, "cached": False, "lead": lead})
+    except Exception as e:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return jsonify({"ok": False, "error": "Scan failed, try again."}), 500
+
 @app.post("/api/sample-lead")
 def sample_lead_capture():
     """Capture email from free sample lead unlock."""
