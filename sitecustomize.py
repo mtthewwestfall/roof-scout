@@ -369,6 +369,13 @@ try:
 except Exception as _micro_widen_error:
     print(f"Roof Scout micro widening skipped: {_micro_widen_error}", flush=True)
 
+
+# Load strict Grade 1 second-pass QC after the base pipeline and tuning wrappers.
+try:
+    import grade1_qc
+except Exception as _grade1_qc_import_error:
+    print(f"Roof Scout Grade 1 QC skipped: {_grade1_qc_import_error}", flush=True)
+
 try:
     from flask import Request
 
