@@ -645,6 +645,32 @@ def _sv_fetch(lat: float, lng: float) -> bytes | None:
     return data if len(data) > 2000 else None
 
 
+
+@app.get("/api/tmp/fetch-imagery")
+def tmp_fetch_imagery():
+    """TEMPORARY: Fetch Street View + Google Satellite for given coords."""
+    from flask import request
+    import base64
+    lat = request.args.get("lat", "39.4818195")
+    lng = request.args.get("lng", "-80.1590922")
+    result = {}
+    # Street View
+    try:
+        sv = _streetview_image(float(lat), float(lng))
+        result["streetview"] = base64.b64encode(sv).decode() if sv else None
+    except Exception as e:
+        result["streetview_error"] = str(e)
+    # Google Satellite
+    try:
+        import sys
+        sys.path.insert(0, ".")
+        from pipeline import _google_satellite_image
+        sat = _google_satellite_image(float(lat), float(lng), 20)
+        result["satellite"] = base64.b64encode(sat).decode() if sat else None
+    except Exception as e:
+        result["satellite_error"] = str(e)
+    return jsonify(result)
+
 @app.get("/api/leads/<lead_key>/streetview")
 def lead_streetview(lead_key):
     """Proxied Google Street View still for an unlocked lead.
