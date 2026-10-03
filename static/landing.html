@@ -1,106 +1,603 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Roof Scout — Find the roofs that need you</title>
-  <meta name="description" content="Roof Scout helps roofing contractors find residential roofs showing visible signs of wear, ranked by priority with imagery and evidence.">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
-  <style>
-    :root{--ink:#122033;--muted:#607089;--line:#d9e3ef;--blue:#2563eb;--blue2:#1d4ed8;--soft:#edf4ff;--bg:#f7faff;--card:#fff;--green:#15803d;--shadow:0 18px 55px rgba(36,71,115,.12)}
-    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--ink);font-family:Inter,system-ui,sans-serif;line-height:1.55;-webkit-font-smoothing:antialiased}a{color:inherit}.wrap{max-width:1160px;margin:auto;padding:0 24px}.nav{position:sticky;top:0;z-index:50;background:rgba(247,250,255,.9);backdrop-filter:blur(14px);border-bottom:1px solid var(--line)}.navin{height:72px;display:flex;align-items:center;gap:28px}.brand{display:flex;align-items:center;gap:10px;text-decoration:none;margin-right:auto}.logo{width:38px;height:38px;border-radius:11px;background:linear-gradient(135deg,#3b82f6,#1e40af);display:grid;place-items:center;color:#fff;font-size:21px;box-shadow:0 7px 18px rgba(37,99,235,.25)}.brand strong{font:700 20px 'Space Grotesk',sans-serif}.links{display:flex;gap:25px;font-size:14px;color:var(--muted)}.links a{text-decoration:none}.links a:hover{color:var(--ink)}.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:13px 20px;border-radius:11px;border:1px solid transparent;text-decoration:none;font-weight:800;font-size:14px;cursor:pointer}.primary{background:var(--blue);color:#fff;box-shadow:0 10px 24px rgba(37,99,235,.22)}.primary:hover{background:var(--blue2)}.dark{background:var(--ink);color:#fff}.ghost{background:#fff;border-color:var(--line);color:var(--ink)}.hero{padding:82px 0 70px;background:radial-gradient(800px 450px at 50% 0,rgba(37,99,235,.13),transparent 70%)}.heroGrid{display:grid;grid-template-columns:1.02fr .98fr;gap:55px;align-items:center}.eyebrow{display:inline-flex;gap:8px;align-items:center;padding:7px 12px;border:1px solid #cfe0fa;border-radius:999px;background:var(--soft);color:var(--blue2);font-size:11px;font-weight:800;letter-spacing:.13em;text-transform:uppercase}.eyebrow i{width:7px;height:7px;border-radius:50%;background:#22c55e;box-shadow:0 0 0 4px #dcfce7}.hero h1{font:700 clamp(44px,6vw,68px)/1.02 'Space Grotesk',sans-serif;letter-spacing:-.045em;margin:20px 0 20px}.hero h1 span{color:var(--blue)}.lead{font-size:18px;color:var(--muted);max-width:650px;line-height:1.7;margin:0 0 28px}.scanBox{background:#fff;border:1px solid var(--line);border-radius:16px;padding:8px;display:flex;gap:8px;max-width:600px;box-shadow:var(--shadow)}.scanBox input{min-width:0;flex:1;border:0;outline:0;padding:12px 13px;font:600 16px Inter;color:var(--ink)}.scanBox input::placeholder{color:#98a8bc}.trust{display:flex;flex-wrap:wrap;gap:18px;margin-top:14px;color:var(--muted);font-size:12px}.trust b{color:var(--ink)}.heroCard{background:#fff;border:1px solid var(--line);border-radius:22px;box-shadow:0 30px 80px rgba(36,71,115,.17);overflow:hidden}.mockTop{padding:15px 18px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:8px}.dot{width:9px;height:9px;border-radius:50%;background:#cbd5e1}.mockTitle{margin-left:auto;font:700 10px ui-monospace;color:#64748b;letter-spacing:.12em}.mockBody{display:grid;grid-template-columns:1fr 1.1fr;min-height:385px}.mockList{padding:17px;background:#f8fafc}.statRow{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-bottom:12px}.stat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px}.stat small{display:block;color:#718096;font-size:9px;text-transform:uppercase;font-weight:800;letter-spacing:.08em}.stat strong{font:700 19px 'Space Grotesk';display:block;margin-top:2px}.roof{background:#fff;border:1px solid var(--line);border-radius:10px;padding:11px;margin:8px 0}.roofTop{display:flex;justify-content:space-between;gap:6px;align-items:center}.roof strong{font-size:12px}.badge{font-size:9px;font-weight:800;padding:3px 6px;border-radius:6px;background:#fee2e2;color:#b91c1c}.roof p{font-size:10px;color:#69798f;margin:5px 0 0}.mockMap{position:relative;overflow:hidden;background:linear-gradient(135deg,#dbeafe 0%,#eff6ff 38%,#dbe9d9 39%,#e8f0dc 100%)}.road{position:absolute;height:24px;background:rgba(255,255,255,.8);transform:rotate(-18deg);width:125%;left:-10%;top:42%}.road2{position:absolute;width:150%;height:18px;background:rgba(255,255,255,.72);transform:rotate(33deg);top:60%;left:-25%}.lot{position:absolute;border:1px solid rgba(93,113,83,.28);background:rgba(196,220,185,.65);transform:rotate(9deg)}.pin{position:absolute;width:22px;height:22px;border-radius:50% 50% 50% 0;background:#dc2626;transform:rotate(-45deg);box-shadow:0 5px 13px rgba(220,38,38,.28)}.pin:after{content:'';position:absolute;width:8px;height:8px;background:#fff;border-radius:50%;top:7px;left:7px}.p1{left:28%;top:24%}.p2{left:58%;top:47%;background:#f59e0b}.p3{left:39%;top:68%;background:#2563eb}.mapLabel{position:absolute;left:16px;bottom:14px;background:#fff;border:1px solid var(--line);border-radius:9px;padding:8px 10px;font-size:10px;font-weight:700;box-shadow:0 8px 20px rgba(30,60,90,.12)}section{padding:92px 0}.tint{background:#eef4fb}.center{text-align:center}.kicker{font-size:11px;font-weight:800;letter-spacing:.2em;text-transform:uppercase;color:var(--blue);margin-bottom:12px}h2{font:700 clamp(32px,4vw,46px)/1.1 'Space Grotesk';letter-spacing:-.035em;margin:0 0 14px}.sub{max-width:700px;color:var(--muted);font-size:17px;line-height:1.7;margin:0 auto 42px}.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}.step{background:#fff;border:1px solid var(--line);border-radius:17px;padding:27px;box-shadow:var(--shadow)}.num{width:40px;height:40px;border-radius:12px;background:var(--soft);color:var(--blue);display:grid;place-items:center;font-weight:800;margin-bottom:17px}.step h3{font:700 20px 'Space Grotesk';margin:0 0 8px}.step p{margin:0;color:var(--muted);font-size:14px}.proof{display:grid;grid-template-columns:1fr 1fr;gap:24px;align-items:stretch}.proofCard{background:#fff;border:1px solid var(--line);border-radius:18px;padding:27px}.proofCard h3{font:700 22px 'Space Grotesk';margin:0 0 15px}.check{display:flex;gap:10px;padding:11px 0;border-top:1px solid #edf1f6;font-size:14px;color:var(--muted)}.check:first-of-type{border-top:0}.check b{color:var(--ink)}.check:before{content:'✓';color:var(--green);font-weight:900}.example{background:var(--ink);color:#fff;border-radius:18px;padding:27px;box-shadow:var(--shadow)}.example .tag{display:inline-block;background:#26364e;color:#bcd2f5;border-radius:7px;padding:5px 8px;font-size:10px;font-weight:800;letter-spacing:.1em}.example h3{font:700 24px 'Space Grotesk';margin:15px 0 7px}.example p{color:#b8c4d5;font-size:14px}.score{display:flex;align-items:center;justify-content:space-between;border-top:1px solid #304057;padding-top:16px;margin-top:16px}.score strong{font:700 30px 'Space Grotesk';color:#fbbf24}.score span{font-size:11px;color:#9fb0c8}.features{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}.feature{background:#fff;border:1px solid var(--line);border-radius:15px;padding:23px}.icon{font-size:22px;margin-bottom:12px}.feature h3{font-size:16px;margin:0 0 7px}.feature p{margin:0;color:var(--muted);font-size:13.5px}.roi{display:grid;grid-template-columns:.9fr 1.1fr;gap:35px;align-items:center}.roiCard{background:#fff;border:1px solid var(--line);border-radius:18px;padding:28px;box-shadow:var(--shadow)}.field{margin:0 0 18px}.field label{display:flex;justify-content:space-between;font-size:12px;font-weight:800;margin-bottom:8px}.field output{color:var(--blue)}input[type=range]{width:100%;accent-color:var(--blue)}.roiResult{background:var(--soft);border:1px solid #cfe0fa;border-radius:13px;padding:17px}.roiResult small{display:block;color:var(--muted);font-size:11px;text-transform:uppercase;font-weight:800;letter-spacing:.08em}.roiResult strong{display:block;font:700 31px 'Space Grotesk';color:var(--blue2);margin-top:3px}.pricing{display:grid;grid-template-columns:1fr 1fr;gap:20px;max-width:850px;margin:auto}.price{background:#fff;border:1px solid var(--line);border-radius:18px;padding:30px;display:flex;flex-direction:column}.price.hot{background:var(--ink);color:#fff;border-color:var(--ink)}.price .name{font-size:11px;font-weight:800;letter-spacing:.18em;color:var(--muted);text-transform:uppercase}.hot .name{color:#b7c5d8}.price .money{font:700 50px 'Space Grotesk';margin:8px 0 4px}.price .per{font-size:12px;color:var(--muted);margin-bottom:20px}.hot .per{color:#a9b8ca}.price ul{list-style:none;padding:0;margin:0 0 24px;flex:1}.price li{padding:9px 0;border-top:1px solid var(--line);font-size:13.5px;color:var(--muted)}.hot li{border-color:#334257;color:#b7c5d8}.price li:first-child{border-top:0}.price li:before{content:'✓';margin-right:8px;color:#22c55e;font-weight:900}.faq{max-width:780px;margin:auto}details{background:#fff;border:1px solid var(--line);border-radius:13px;padding:19px 22px;margin:10px 0}summary{cursor:pointer;font-weight:800;list-style:none;display:flex;justify-content:space-between;gap:16px}summary::-webkit-details-marker{display:none}summary:after{content:'+';color:var(--blue);font-size:20px}details[open] summary:after{content:'−'}details p{color:var(--muted);font-size:14px;margin:12px 0 2px}.final{background:linear-gradient(135deg,#10213a,#1d4ed8);color:#fff;text-align:center;padding:90px 0}.final p{color:#c9d6e8;max-width:600px;margin:0 auto 25px}.fine{font-size:11px;color:#7b8ba0;margin-top:13px}footer{padding:30px 0;border-top:1px solid var(--line);font-size:12px;color:var(--muted)}footer .wrap{display:flex;justify-content:space-between;gap:18px;flex-wrap:wrap}
-    @media(max-width:900px){.heroGrid,.proof,.roi{grid-template-columns:1fr}.heroCard{max-width:650px;margin:auto}.steps,.features{grid-template-columns:1fr}.links{display:none}.hero{padding-top:60px}.mockBody{min-height:330px}}
-    @media(max-width:560px){.wrap{padding:0 17px}.navin{height:62px}.nav .btn{padding:10px 13px}.hero h1{font-size:43px}.hero{padding:48px 0 55px}.scanBox{flex-direction:column;background:transparent;border:0;box-shadow:none;padding:0}.scanBox input{border:1px solid var(--line);border-radius:11px;background:#fff}.scanBox .btn{width:100%}.mockBody{grid-template-columns:1fr}.mockMap{display:none}.pricing{grid-template-columns:1fr}.price .money{font-size:43px}}
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Roof Scout — Find the Roofs That Need You Before They Call Anyone</title>
+<meta name="description" content="Roof Scout helps roofing contractors find residential roofs showing visible signs of wear, prioritize opportunities, and prospect smarter with imagery and evidence.">
+<meta property="og:title" content="Roof Scout — Find the Roofs That Need You Before They Call Anyone">
+<meta property="og:description" content="Roof Scout helps roofing contractors find residential roofs showing visible signs of wear, prioritize opportunities, and prospect smarter with imagery and evidence.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://getveridatenow.com/">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --navy:#0B1B33; --navy-2:#12294d; --blue:#2563EB; --blue-dark:#1D4ED8;
+  --blue-soft:#EFF4FE; --bg:#ffffff; --bg-soft:#F5F8FC; --bg-softer:#FAFCFF;
+  --text:#0F1E33; --muted:#5B6B82; --border:#E2E8F2;
+  --green:#16A34A; --green-soft:#EAF9F0; --red:#DC2626; --red-soft:#FDECEC;
+  --amber:#D97706; --amber-soft:#FDF3E3;
+  --radius:18px; --shadow:0 10px 34px rgba(11,27,51,.09);
+  --shadow-sm:0 4px 14px rgba(11,27,51,.07);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{font-family:'Inter',system-ui,sans-serif;color:var(--text);background:var(--bg);line-height:1.6;-webkit-font-smoothing:antialiased}
+h1,h2,h3{font-family:'Space Grotesk','Inter',sans-serif;line-height:1.15;letter-spacing:-.02em}
+.wrap{max-width:1140px;margin:0 auto;padding:0 24px}
+section{padding:88px 0}
+.kicker{display:inline-block;font-size:12.5px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--blue);margin-bottom:14px}
+.sec-title{font-size:clamp(28px,4vw,42px);font-weight:700;margin-bottom:14px}
+.sec-sub{font-size:17px;color:var(--muted);max-width:640px}
+.center{text-align:center}.center .sec-sub{margin:0 auto}
+
+/* ---------- Nav ---------- */
+.nav{position:sticky;top:0;z-index:100;background:rgba(255,255,255,.92);backdrop-filter:blur(12px);border-bottom:1px solid var(--border)}
+.nav .wrap{display:flex;align-items:center;justify-content:space-between;height:68px}
+.brand{display:flex;align-items:center;gap:9px;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:19px;color:var(--text);text-decoration:none}
+.brand-mark{width:32px;height:32px;border-radius:9px;background:linear-gradient(135deg,var(--blue),#1e40af);color:#fff;display:flex;align-items:center;justify-content:center;font-size:17px}
+.nav-links{display:flex;gap:28px}
+.nav-links a{font-size:14.5px;font-weight:500;color:var(--muted);text-decoration:none}
+.nav-links a:hover{color:var(--text)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;font-weight:700;border-radius:12px;text-decoration:none;cursor:pointer;border:none;font-family:'Inter',sans-serif;transition:transform .12s ease,box-shadow .12s ease}
+.btn:active{transform:translateY(1px)}
+.btn-primary{background:var(--blue);color:#fff;padding:13px 26px;font-size:15.5px;box-shadow:0 6px 18px rgba(37,99,235,.32)}
+.btn-primary:hover{background:var(--blue-dark)}
+.btn-sm{padding:10px 20px;font-size:14px;white-space:nowrap}
+.btn-outline{background:#fff;color:var(--text);border:1.5px solid var(--border);padding:12px 24px;font-size:15px}
+.btn-outline:hover{border-color:var(--blue);color:var(--blue)}
+@media(max-width:860px){.nav-links{display:none}}
+
+/* ---------- Hero ---------- */
+.hero{background:linear-gradient(180deg,#F2F6FD 0%,#FFFFFF 100%);padding:72px 0 80px;overflow:hidden}
+.hero-grid{display:grid;grid-template-columns:1fr 1.05fr;gap:56px;align-items:center}
+.hero h1{font-size:clamp(36px,5vw,56px);font-weight:700;margin:18px 0 18px}
+.hero h1 .accent{color:var(--blue)}
+.hero .sub{font-size:18px;color:var(--muted);max-width:520px;margin-bottom:28px}
+.zip-form{display:flex;gap:10px;max-width:480px}
+.zip-form input{flex:1;min-width:0;padding:15px 18px;font-size:16px;border:2px solid var(--border);border-radius:12px;font-family:'Inter',sans-serif;outline:none;transition:border-color .15s}
+.zip-form input:focus{border-color:var(--blue)}
+.zip-form input.invalid{border-color:var(--red)}
+.zip-msg{font-size:13.5px;color:var(--red);min-height:20px;margin-top:6px}
+.hero-checks{display:flex;gap:20px;flex-wrap:wrap;margin-top:14px;font-size:14.5px;font-weight:600;color:var(--text)}
+.hero-checks span{display:flex;align-items:center;gap:7px}
+.hero-checks .tick{color:var(--green);font-weight:800}
+
+/* Dashboard mockup */
+.dash{background:#fff;border:1px solid var(--border);border-radius:22px;box-shadow:var(--shadow);overflow:hidden}
+.dash-head{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border);background:var(--bg-softer)}
+.dash-head .zip{font-weight:700;font-size:15px}
+.dash-head .zip small{display:block;font-weight:500;color:var(--muted);font-size:12px}
+.scan-badge{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;font-weight:700;color:var(--green);background:var(--green-soft);padding:6px 12px;border-radius:999px;white-space:nowrap}
+.scan-badge .dot{width:8px;height:8px;border-radius:50%;background:var(--green)}
+.dash-stats{display:grid;grid-template-columns:repeat(3,1fr);border-bottom:1px solid var(--border)}
+.stat{padding:16px 20px;border-right:1px solid var(--border)}
+.stat:last-child{border-right:none}
+.stat .num{font-family:'Space Grotesk',sans-serif;font-size:24px;font-weight:700}
+.stat .lbl{font-size:12px;color:var(--muted);font-weight:500}
+.dash-map{position:relative;height:220px;background:#E8EEF6;overflow:hidden;
+  background-image:linear-gradient(#dbe4f0 1px,transparent 1px),linear-gradient(90deg,#dbe4f0 1px,transparent 1px);
+  background-size:34px 34px}
+.road{position:absolute;background:#fff;border-radius:4px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+.pin{position:absolute;transform:translate(-50%,-100%);display:flex;flex-direction:column;align-items:center}
+.pin .head{width:18px;height:18px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);border:2.5px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.25)}
+.pin.high .head{background:var(--red)}
+.pin.med .head{background:var(--amber)}
+.pin .pulse{position:absolute;top:-4px;width:26px;height:26px;border-radius:50%;opacity:.35;animation:pulse 2.2s infinite}
+.pin.high .pulse{background:var(--red)}
+@keyframes pulse{0%{transform:scale(.6);opacity:.4}70%{transform:scale(1.4);opacity:0}100%{opacity:0}}
+.dash-leads{padding:16px 20px;display:flex;flex-direction:column;gap:12px;background:#fff}
+.lead-card{border:1px solid var(--border);border-radius:14px;padding:14px 16px;display:flex;gap:14px;align-items:flex-start}
+.lead-thumb{width:52px;height:52px;border-radius:10px;background:linear-gradient(135deg,#c9d6ea,#aebfdf);flex-shrink:0;position:relative;overflow:hidden}
+.lead-thumb::after{content:"";position:absolute;inset:8px;border:2px dashed rgba(220,38,38,.55);border-radius:6px}
+.lead-card.med .lead-thumb::after{border-color:rgba(217,119,6,.55)}
+.lead-info{flex:1;min-width:0}
+.lead-info .addr{font-weight:700;font-size:14.5px}
+.lead-info .note{font-size:13px;color:var(--muted);margin-top:3px;line-height:1.5}
+.prio{font-size:11px;font-weight:800;letter-spacing:.08em;padding:5px 10px;border-radius:999px;white-space:nowrap;flex-shrink:0}
+.prio.high{background:var(--red-soft);color:var(--red)}
+.prio.med{background:var(--amber-soft);color:var(--amber)}
+.dash-foot{padding:12px 20px;border-top:1px solid var(--border);font-size:12px;color:var(--muted);background:var(--bg-softer)}
+@media(max-width:960px){.hero-grid{grid-template-columns:1fr}.hero{padding:52px 0 60px}}
+
+/* ---------- Steps ---------- */
+.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:22px;margin-top:44px}
+.step{background:#fff;border:1px solid var(--border);border-radius:var(--radius);padding:32px 28px;box-shadow:var(--shadow-sm)}
+.step .num{font-family:'Space Grotesk',sans-serif;font-size:13px;font-weight:700;color:var(--blue);letter-spacing:.12em;margin-bottom:12px}
+.step h3{font-size:20px;margin-bottom:10px}
+.step p{font-size:15px;color:var(--muted)}
+.step .icon{font-size:30px;margin-bottom:16px}
+@media(max-width:860px){.steps{grid-template-columns:1fr}}
+
+/* ---------- Proof / dark card ---------- */
+.proof-sec{background:var(--bg-soft)}
+.proof-grid{display:grid;grid-template-columns:1fr 1fr;gap:56px;align-items:center;margin-top:8px}
+.flag-card{background:linear-gradient(160deg,#0d1f3c,#132c52);border-radius:22px;padding:34px;color:#fff;box-shadow:0 20px 50px rgba(11,27,51,.3)}
+.flag-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;gap:12px;flex-wrap:wrap}
+.flag-badge{background:var(--red);color:#fff;font-size:11.5px;font-weight:800;letter-spacing:.1em;padding:7px 14px;border-radius:999px;white-space:nowrap}
+.flag-addr{font-family:'Space Grotesk',sans-serif;font-size:21px;font-weight:600;margin-bottom:4px}
+.flag-sub{font-size:13.5px;color:#9fb0c9;margin-bottom:24px}
+.score-row{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px}
+.score-row .lbl{font-size:13px;color:#9fb0c9;font-weight:600}
+.score-row .val{font-family:'Space Grotesk',sans-serif;font-size:30px;font-weight:700;color:#fff}
+.score-bar{height:10px;border-radius:999px;background:rgba(255,255,255,.14);overflow:hidden;margin-bottom:26px}
+.score-fill{height:100%;width:87%;border-radius:999px;background:linear-gradient(90deg,var(--amber),var(--red))}
+.evidence{list-style:none;display:flex;flex-direction:column;gap:12px}
+.evidence li{display:flex;gap:12px;align-items:flex-start;font-size:14.5px;color:#dbe4f2}
+.evidence .ck{color:#4ade80;font-weight:800;flex-shrink:0}
+.disclaimer{font-size:12.5px;color:var(--muted);margin-top:26px;line-height:1.6;border-top:1px solid var(--border);padding-top:18px}
+@media(max-width:960px){.proof-grid{grid-template-columns:1fr}}
+
+/* ---------- Features ---------- */
+.feat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:22px;margin-top:44px}
+.feat{background:#fff;border:1px solid var(--border);border-radius:var(--radius);padding:30px 26px;box-shadow:var(--shadow-sm);transition:transform .15s ease,box-shadow .15s ease}
+.feat:hover{transform:translateY(-3px);box-shadow:var(--shadow)}
+.feat .icon{width:46px;height:46px;border-radius:13px;background:var(--blue-soft);display:flex;align-items:center;justify-content:center;font-size:22px;margin-bottom:18px}
+.feat h3{font-size:18px;margin-bottom:8px}
+.feat p{font-size:14.5px;color:var(--muted)}
+@media(max-width:960px){.feat-grid{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:620px){.feat-grid{grid-template-columns:1fr}}
+
+/* ---------- ROI ---------- */
+.roi-sec{background:var(--navy);color:#fff}
+.roi-sec .kicker{color:#7ea4f5}
+.roi-sec .sec-sub{color:#9fb0c9}
+.roi-grid{display:grid;grid-template-columns:1.1fr .9fr;gap:48px;margin-top:44px;align-items:start}
+.roi-controls{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.12);border-radius:var(--radius);padding:34px}
+.roi-field{margin-bottom:28px}
+.roi-field:last-child{margin-bottom:0}
+.roi-field .row{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px}
+.roi-field label{font-size:14.5px;font-weight:600;color:#dbe4f2}
+.roi-field .val{font-family:'Space Grotesk',sans-serif;font-size:19px;font-weight:700;color:#fff}
+input[type=range]{width:100%;appearance:none;-webkit-appearance:none;height:8px;border-radius:999px;background:rgba(255,255,255,.18);outline:none}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:24px;height:24px;border-radius:50%;background:var(--blue);border:3px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,.3);cursor:pointer}
+input[type=range]::-moz-range-thumb{width:22px;height:22px;border-radius:50%;background:var(--blue);border:3px solid #fff;cursor:pointer}
+.roi-result{background:#fff;color:var(--text);border-radius:var(--radius);padding:40px 34px;text-align:center;box-shadow:0 20px 50px rgba(0,0,0,.25)}
+.roi-result .lbl{font-size:13px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:10px}
+.roi-result .big{font-family:'Space Grotesk',sans-serif;font-size:clamp(40px,5vw,58px);font-weight:700;color:var(--blue)}
+.roi-result .math{font-size:13.5px;color:var(--muted);margin-top:12px}
+.roi-disc{font-size:12.5px;color:#8ea0ba;margin-top:22px;line-height:1.6}
+@media(max-width:960px){.roi-grid{grid-template-columns:1fr}}
+
+/* ---------- Workflow ---------- */
+.flow{display:flex;align-items:stretch;justify-content:center;margin-top:48px}
+.flow-step{background:#fff;border:1.5px solid var(--border);border-radius:16px;padding:20px 14px;text-align:center;flex:1;min-width:0;box-shadow:var(--shadow-sm)}
+.flow-step .icon{font-size:26px;margin-bottom:8px}
+.flow-step .t{font-weight:700;font-size:14px}
+.flow-step .d{font-size:12px;color:var(--muted);margin-top:4px;line-height:1.5}
+.flow-arrow{display:flex;align-items:center;justify-content:center;padding:0 6px;color:var(--blue);font-size:20px;font-weight:800;flex-shrink:0}
+.workflow-note{max-width:680px;margin:36px auto 0;text-align:center;font-size:14.5px;color:var(--muted)}
+@media(max-width:760px){.flow{flex-direction:column}.flow-arrow{transform:rotate(90deg);padding:8px 0}.flow-step{width:100%}}
+
+/* ---------- Pricing ---------- */
+.pricing-sec{background:var(--bg-soft)}
+.price-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:26px;max-width:820px;margin:44px auto 0}
+.price-card{background:#fff;border:1.5px solid var(--border);border-radius:22px;padding:40px 36px;position:relative;box-shadow:var(--shadow-sm)}
+.price-card.pro{border-color:var(--blue);box-shadow:0 18px 46px rgba(37,99,235,.18)}
+@media(min-width:761px){.price-card.pro{transform:scale(1.04)}}
+.pop-badge{position:absolute;top:-15px;left:50%;transform:translateX(-50%);background:var(--blue);color:#fff;font-size:12px;font-weight:800;letter-spacing:.08em;padding:7px 18px;border-radius:999px;white-space:nowrap}
+.price-card h3{font-size:22px;margin-bottom:6px}
+.price-card .pdesc{font-size:14px;color:var(--muted);margin-bottom:20px}
+.price{font-family:'Space Grotesk',sans-serif;font-size:46px;font-weight:700}
+.price small{font-family:'Inter',sans-serif;font-size:15px;font-weight:500;color:var(--muted)}
+.price-feats{list-style:none;margin:26px 0 30px;display:flex;flex-direction:column;gap:12px}
+.price-feats li{display:flex;gap:10px;font-size:14.5px;align-items:flex-start}
+.price-feats .ck{color:var(--green);font-weight:800;flex-shrink:0}
+.price-card .btn{width:100%}
+@media(max-width:760px){.price-grid{grid-template-columns:1fr}}
+
+/* ---------- FAQ ---------- */
+.faq-list{max-width:760px;margin:40px auto 0;display:flex;flex-direction:column;gap:14px}
+.faq-item{background:#fff;border:1px solid var(--border);border-radius:16px;overflow:hidden}
+.faq-item summary{padding:20px 24px;font-weight:700;font-size:16px;cursor:pointer;list-style:none;display:flex;justify-content:space-between;align-items:center;gap:16px}
+.faq-item summary::-webkit-details-marker{display:none}
+.faq-item summary::after{content:"+";font-size:24px;font-weight:400;color:var(--blue);flex-shrink:0}
+.faq-item[open] summary::after{content:"\2013"}
+.faq-item .a{padding:0 24px 22px;font-size:15px;color:var(--muted);line-height:1.7}
+
+/* ---------- Final CTA ---------- */
+.final-cta{background:linear-gradient(135deg,#0B1B33 0%,#14305e 60%,#1D4ED8 130%);color:#fff;text-align:center}
+.final-cta h2{font-size:clamp(30px,4.5vw,46px);margin-bottom:14px}
+.final-cta .sub{color:#b9c8e2;font-size:17px;margin-bottom:32px}
+.final-cta .zip-form{margin:0 auto}
+.final-cta .zip-form input{background:rgba(255,255,255,.1);border:2px solid rgba(255,255,255,.25);color:#fff}
+.final-cta .zip-form input::placeholder{color:#8ea0ba}
+.final-cta .zip-form input:focus{border-color:#fff}
+.final-cta .zip-msg{color:#fca5a5}
+.final-cta .fine{margin-top:16px;font-size:14px;color:#8ea0ba}
+@media(max-width:560px){.zip-form{flex-direction:column}.zip-form .btn{width:100%}}
+
+/* ---------- Footer ---------- */
+footer{border-top:1px solid var(--border);padding:36px 0;color:var(--muted);font-size:13.5px}
+footer .wrap{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap}
+footer nav{display:flex;gap:4px;flex-wrap:wrap}
+footer a{color:var(--muted);text-decoration:none;margin-left:18px}
+footer a:hover{color:var(--text)}
+</style>
 </head>
 <body>
-  <nav class="nav"><div class="wrap navin">
-    <a class="brand" href="/"><span class="logo">⌂</span><strong>Roof Scout</strong></a>
-    <div class="links"><a href="#how">How it works</a><a href="#proof">Proof</a><a href="#roi">ROI</a><a href="#pricing">Pricing</a><a href="#faq">FAQ</a></div>
-    <a class="btn primary" href="/app">Open Roof Scout →</a>
-  </div></nav>
 
-  <main>
-    <section class="hero"><div class="wrap heroGrid">
-      <div>
-        <div class="eyebrow"><i></i> AI roof prospecting for contractors</div>
-        <h1>Find the roofs that <span>need you</span> before they call anyone.</h1>
-        <p class="lead">Enter a ZIP code. Roof Scout scans rooftops, ranks visible signs of wear, and gives you the addresses, imagery, and evidence you need to start a sales conversation.</p>
-        <form class="scanBox" onsubmit="event.preventDefault(); goScan();">
-          <input id="zip" inputmode="numeric" maxlength="5" pattern="[0-9]{5}" placeholder="Enter a ZIP code — try 26554" aria-label="ZIP code">
-          <button class="btn primary" type="submit">Scan this ZIP →</button>
-        </form>
-        <div class="trust"><span>✓ <b>1 free ZIP scan</b></span><span>✓ 5 lead unlocks</span><span>✓ No credit card</span></div>
+<nav class="nav" aria-label="Main navigation">
+  <div class="wrap">
+    <a class="brand" href="#"><span class="brand-mark">⌂</span>Roof Scout</a>
+    <div class="nav-links">
+      <a href="#how-it-works">How it works</a>
+      <a href="#proof">Proof</a>
+      <a href="#roi">ROI</a>
+      <a href="#pricing">Pricing</a>
+      <a href="#faq">FAQ</a>
+    </div>
+    <a class="btn btn-primary btn-sm" href="/app">Open Roof Scout →</a>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap hero-grid">
+    <div>
+      <span class="kicker">AI-powered roofing prospectus</span>
+      <h1>Find the roofs that need you <span class="accent">before they call anyone.</span></h1>
+      <p class="sub">Enter a ZIP code. Roof Scout scans rooftops, ranks visible signs of wear, and gives you the addresses, imagery, and evidence you need to start a sales conversation.</p>
+      <form class="zip-form" id="heroZipForm" novalidate>
+        <input type="text" id="heroZip" inputmode="numeric" maxlength="5" placeholder="Enter a ZIP code — try 26554" aria-label="ZIP code">
+        <button type="submit" class="btn btn-primary">Scan this ZIP →</button>
+      </form>
+      <p class="zip-msg" id="heroZipMsg" role="alert"></p>
+      <div class="hero-checks">
+        <span><span class="tick">✓</span> 1 free ZIP scan</span>
+        <span><span class="tick">✓</span> 5 lead unlocks</span>
+        <span><span class="tick">✓</span> No credit card</span>
       </div>
-      <div class="heroCard" aria-label="Roof Scout dashboard preview">
-        <div class="mockTop"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="mockTitle">ROOF SCOUT / SAMPLE SCAN</span></div>
-        <div class="mockBody">
-          <div class="mockList">
-            <div class="statRow"><div class="stat"><small>Roofs</small><strong>147</strong></div><div class="stat"><small>Priority</small><strong>12</strong></div><div class="stat"><small>Map</small><strong>LIVE</strong></div></div>
-            <div class="roof"><div class="roofTop"><strong>123 Main Street</strong><span class="badge">GRADE 1</span></div><p>Failing · visible wear · ranked first</p></div>
-            <div class="roof"><div class="roofTop"><strong>84 Oak Avenue</strong><span class="badge" style="background:#fff7ed;color:#c2410c">GRADE 2</span></div><p>Worn · repair soon · imagery available</p></div>
-            <div class="roof"><div class="roofTop"><strong>19 Pine Drive</strong><span class="badge" style="background:#fffbeb;color:#a16207">GRADE 3</span></div><p>Aging · watch · evidence included</p></div>
+    </div>
+    <div>
+      <div class="dash" role="img" aria-label="Illustrative Roof Scout dashboard showing a ZIP scan with priority leads">
+        <div class="dash-head">
+          <div class="zip">ZIP 43026<small>Columbus, OH · Residential</small></div>
+          <span class="scan-badge"><span class="dot"></span>Scan complete</span>
+        </div>
+        <div class="dash-stats">
+          <div class="stat"><div class="num">1,284</div><div class="lbl">Roofs scanned</div></div>
+          <div class="stat"><div class="num" style="color:var(--red)">47</div><div class="lbl">Priority leads</div></div>
+          <div class="stat"><div class="num" style="color:var(--green)">$312K</div><div class="lbl">Est. opportunity</div></div>
+        </div>
+        <div class="dash-map" aria-hidden="true">
+          <div class="road" style="left:8%;top:0;width:14px;height:100%;transform:rotate(8deg)"></div>
+          <div class="road" style="left:0;top:32%;width:100%;height:12px;transform:rotate(-4deg)"></div>
+          <div class="road" style="left:52%;top:0;width:10px;height:100%;transform:rotate(-10deg)"></div>
+          <div class="road" style="left:0;top:68%;width:100%;height:10px;transform:rotate(3deg)"></div>
+          <div class="pin high" style="left:24%;top:42%"><span class="pulse"></span><span class="head"></span></div>
+          <div class="pin high" style="left:63%;top:30%"><span class="head"></span></div>
+          <div class="pin med" style="left:44%;top:66%"><span class="head"></span></div>
+          <div class="pin med" style="left:78%;top:58%"><span class="head"></span></div>
+          <div class="pin med" style="left:36%;top:22%"><span class="head"></span></div>
+        </div>
+        <div class="dash-leads">
+          <div class="lead-card">
+            <div class="lead-thumb"></div>
+            <div class="lead-info">
+              <div class="addr">1234 Example Drive</div>
+              <div class="note">"Visible roof wear detected. Multiple areas show patterns consistent with aging or surface deterioration."</div>
+            </div>
+            <span class="prio high">HIGH</span>
           </div>
-          <div class="mockMap"><span class="lot" style="width:120px;height:65px;left:10%;top:11%"></span><span class="lot" style="width:105px;height:60px;left:55%;top:20%"></span><span class="lot" style="width:130px;height:70px;left:26%;top:57%"></span><span class="road"></span><span class="road2"></span><span class="pin p1"></span><span class="pin p2"></span><span class="pin p3"></span><span class="mapLabel">Priority roofs shown on your scan map</span></div>
+          <div class="lead-card med">
+            <div class="lead-thumb"></div>
+            <div class="lead-info">
+              <div class="addr">5678 Example Lane</div>
+              <div class="note">"Roof surface shows potential wear requiring closer review."</div>
+            </div>
+            <span class="prio med">MEDIUM</span>
+          </div>
+        </div>
+        <div class="dash-foot">Illustrative demo data — not real performance claims.</div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<section id="how-it-works">
+  <div class="wrap">
+    <div class="center">
+      <span class="kicker">How it works</span>
+      <h2 class="sec-title">Stop driving around looking for work.</h2>
+      <p class="sec-sub">Roof Scout helps you find neighborhoods and properties worth investigating before you spend hours prospecting manually.</p>
+    </div>
+    <div class="steps">
+      <div class="step">
+        <div class="icon">📍</div>
+        <div class="num">01 — SCAN</div>
+        <h3>Scan</h3>
+        <p>Enter a ZIP code and let Roof Scout analyze available rooftop imagery across the area.</p>
+      </div>
+      <div class="step">
+        <div class="icon">🎯</div>
+        <div class="num">02 — PRIORITIZE</div>
+        <h3>Prioritize</h3>
+        <p>Properties are ranked based on visible indicators and opportunity signals — worst first.</p>
+      </div>
+      <div class="step">
+        <div class="icon">🤝</div>
+        <div class="num">03 — PROSPECT</div>
+        <h3>Prospect</h3>
+        <p>Get the address, imagery, evidence, and context needed to start a conversation with the homeowner.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="proof" class="proof-sec">
+  <div class="wrap">
+    <div class="proof-grid">
+      <div>
+        <span class="kicker">Evidence, not just addresses</span>
+        <h2 class="sec-title">Know why a roof was flagged.</h2>
+        <p class="sec-sub">Don't just buy a list of addresses. Understand why each property deserves a closer look — with the imagery and signals to back it up.</p>
+        <p class="disclaimer">Roof Scout identifies visible signals for prospecting. It is not a roof inspection, engineering assessment, or guarantee of damage.</p>
+      </div>
+      <div class="flag-card">
+        <div class="flag-top">
+          <span class="flag-badge">HIGH PRIORITY</span>
+          <span style="font-size:12.5px;color:#9fb0c9">Example property</span>
+        </div>
+        <div class="flag-addr">1234 Example Drive</div>
+        <div class="flag-sub">Residential · Visible from aerial imagery</div>
+        <div class="score-row">
+          <span class="lbl">Opportunity Score</span>
+          <span class="val">87</span>
+        </div>
+        <div class="score-bar"><div class="score-fill"></div></div>
+        <ul class="evidence">
+          <li><span class="ck">✓</span> Visible surface wear</li>
+          <li><span class="ck">✓</span> Possible aging indicators</li>
+          <li><span class="ck">✓</span> Multiple areas requiring closer review</li>
+          <li><span class="ck">✓</span> Imagery available</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="features">
+  <div class="wrap">
+    <div class="center">
+      <span class="kicker">What you get</span>
+      <h2 class="sec-title">Everything you need to prospect smarter.</h2>
+    </div>
+    <div class="feat-grid">
+      <div class="feat">
+        <div class="icon">🎯</div>
+        <h3>Verified-looking opportunities</h3>
+        <p>Prioritized properties instead of random addresses.</p>
+      </div>
+      <div class="feat">
+        <div class="icon">🛰️</div>
+        <h3>Visual evidence</h3>
+        <p>See the imagery behind the opportunity.</p>
+      </div>
+      <div class="feat">
+        <div class="icon">📊</div>
+        <h3>Opportunity scoring</h3>
+        <p>Quickly identify which properties deserve attention first.</p>
+      </div>
+      <div class="feat">
+        <div class="icon">🗺️</div>
+        <h3>Neighborhood targeting</h3>
+        <p>Focus prospecting on ZIP codes and areas with potential.</p>
+      </div>
+      <div class="feat">
+        <div class="icon">💡</div>
+        <h3>Lead intelligence</h3>
+        <p>Understand why a property was flagged.</p>
+      </div>
+      <div class="feat">
+        <div class="icon">✉️</div>
+        <h3>Sales-ready workflow</h3>
+        <p>Turn a prospect into an outreach opportunity.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="roi" class="roi-sec">
+  <div class="wrap">
+    <div class="center">
+      <span class="kicker">ROI calculator</span>
+      <h2 class="sec-title" style="color:#fff">See what a handful of opportunities could be worth.</h2>
+      <p class="sec-sub">Adjust the numbers to match your business. This is an illustrative estimate — not a promise.</p>
+    </div>
+    <div class="roi-grid">
+      <div class="roi-controls">
+        <div class="roi-field">
+          <div class="row"><label for="roiJob">Average roof job value</label><span class="val" id="roiJobVal">$12,000</span></div>
+          <input type="range" id="roiJob" min="5000" max="30000" step="500" value="12000" aria-label="Average roof job value">
+        </div>
+        <div class="roi-field">
+          <div class="row"><label for="roiOpps">Qualified opportunities</label><span class="val" id="roiOppsVal">10</span></div>
+          <input type="range" id="roiOpps" min="1" max="50" step="1" value="10" aria-label="Qualified opportunities">
+        </div>
+        <div class="roi-field">
+          <div class="row"><label for="roiRate">Estimated close rate</label><span class="val" id="roiRateVal">20%</span></div>
+          <input type="range" id="roiRate" min="5" max="50" step="1" value="20" aria-label="Estimated close rate">
         </div>
       </div>
-    </div></section>
+      <div>
+        <div class="roi-result">
+          <div class="lbl">Estimated potential revenue</div>
+          <div class="big" id="roiResult">$24,000</div>
+          <div class="math" id="roiMath">$12,000 × 10 opportunities × 20% close rate</div>
+        </div>
+        <p class="roi-disc">Illustrative estimate only. Actual results vary by market, lead quality, close rate, job size, and other factors.</p>
+      </div>
+    </div>
+  </div>
+</section>
 
-    <section id="how"><div class="wrap center"><div class="kicker">From ZIP code to sales conversation</div><h2>Three steps. No windshield prospecting.</h2><p class="sub">Roof Scout turns a geographic area into a ranked list of properties worth investigating — so your team spends more time selling and less time searching.</p><div class="steps">
-      <div class="step"><div class="num">01</div><h3>Scan a ZIP</h3><p>Pick a ZIP code and the system samples real properties using map and imagery data.</p></div>
-      <div class="step"><div class="num">02</div><h3>Prioritize roofs</h3><p>AI grades visible roof condition from 0–5 and puts the most concerning results first.</p></div>
-      <div class="step"><div class="num">03</div><h3>Prospect smarter</h3><p>Open the imagery, evidence, map links, and outbound pitch for the leads you choose to unlock.</p></div>
-    </div></div></section>
+<section id="workflow">
+  <div class="wrap">
+    <div class="center">
+      <span class="kicker">Lead workflow</span>
+      <h2 class="sec-title">From rooftop signal to sales conversation.</h2>
+    </div>
+    <div class="flow">
+      <div class="flow-step"><div class="icon">📍</div><div class="t">ZIP</div><div class="d">Pick your service area</div></div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step"><div class="icon">🏠</div><div class="t">Property</div><div class="d">Flagged opportunities</div></div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step"><div class="icon">🔍</div><div class="t">Evidence</div><div class="d">Imagery &amp; signals</div></div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step"><div class="icon">✉️</div><div class="t">Outreach</div><div class="d">Start the conversation</div></div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step"><div class="icon">🧰</div><div class="t">Inspection</div><div class="d">Your professional eyes</div></div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step"><div class="icon">✅</div><div class="t">Job</div><div class="d">Signed &amp; scheduled</div></div>
+    </div>
+    <p class="workflow-note">Roof Scout is designed to help contractors find and prioritize prospects. The contractor remains responsible for contacting the homeowner and professionally evaluating the property.</p>
+  </div>
+</section>
 
-    <section id="proof" class="tint"><div class="wrap"><div class="proof">
-      <div class="proofCard"><div class="kicker">Why this lead?</div><h3>Every result comes with a reason.</h3><div class="check"><div><b>Visual evidence</b><br>See the imagery used to make the estimate.</div></div><div class="check"><div><b>Condition grade</b><br>Compare roofs consistently instead of relying on a quick drive-by.</div></div><div class="check"><div><b>Map + Street View links</b><br>Verify the property before you spend time or money on outreach.</div></div><div class="check"><div><b>AI estimate, not an inspection</b><br>Use Roof Scout to prioritize prospects — verify on site before quoting.</div></div></div>
-      <div class="example"><span class="tag">ILLUSTRATIVE LEAD</span><h3>123 Main Street</h3><p>Roof Scout flags this property for visible signs of wear in the available imagery.</p><div class="score"><div><strong>1 / 5</strong><br><span>Failing · replace now</span></div><div style="text-align:right"><span>Evidence</span><br><b style="color:#fff">Imagery + notes</b></div></div><p style="font-size:12px;margin-bottom:0">Example only. Grades are AI estimates from imagery and should be verified on site.</p></div>
-    </div></div></section>
+<section id="pricing" class="pricing-sec">
+  <div class="wrap">
+    <div class="center">
+      <span class="kicker">Pricing</span>
+      <h2 class="sec-title">Simple plans that pay for themselves.</h2>
+      <p class="sec-sub">One closed job covers months of Roof Scout. Start free — no credit card required.</p>
+    </div>
+    <div class="price-grid">
+      <div class="price-card">
+        <h3>Starter</h3>
+        <p class="pdesc">For contractors testing smarter prospecting.</p>
+        <div class="price">$49.99<small>/month</small></div>
+        <ul class="price-feats">
+          <li><span class="ck">✓</span> ZIP scanning</li>
+          <li><span class="ck">✓</span> Priority opportunities</li>
+          <li><span class="ck">✓</span> Property details</li>
+          <li><span class="ck">✓</span> Basic lead information</li>
+          <li><span class="ck">✓</span> Limited lead unlocks</li>
+        </ul>
+        <a class="btn btn-outline" href="/app">Start Scanning</a>
+      </div>
+      <div class="price-card pro">
+        <span class="pop-badge">MOST POPULAR</span>
+        <h3>Pro</h3>
+        <p class="pdesc">For contractors who want a full pipeline.</p>
+        <div class="price">$99.99<small>/month</small></div>
+        <ul class="price-feats">
+          <li><span class="ck">✓</span> Everything in Starter</li>
+          <li><span class="ck">✓</span> More ZIP scans</li>
+          <li><span class="ck">✓</span> More lead unlocks</li>
+          <li><span class="ck">✓</span> Advanced opportunity information</li>
+          <li><span class="ck">✓</span> Sales workflow tools</li>
+          <li><span class="ck">✓</span> Lead organization</li>
+        </ul>
+        <a class="btn btn-primary" href="/app">Start Prospecting</a>
+      </div>
+    </div>
+  </div>
+</section>
 
-    <section><div class="wrap center"><div class="kicker">Built for the sales team</div><h2>More than a list of addresses.</h2><p class="sub">The useful part is what happens after a roof is flagged.</p><div class="features">
-      <div class="feature"><div class="icon">🗺️</div><h3>Opportunity map</h3><p>See priority roofs geographically and move from list to neighborhood strategy.</p></div>
-      <div class="feature"><div class="icon">🔎</div><h3>Evidence at a glance</h3><p>Review imagery, condition, material, pitch, and visible indicators before outreach.</p></div>
-      <div class="feature"><div class="icon">✉️</div><h3>Lead-ready outreach</h3><p>Use the built-in pitch and direct-mail workflow to turn a finding into an action.</p></div>
-      <div class="feature"><div class="icon">📊</div><h3>CSV export</h3><p>Take unlocked leads into the workflow your team already uses.</p></div>
-      <div class="feature"><div class="icon">🤖</div><h3>Ask Scout</h3><p>Use your scanned leads as context for prioritization and sales questions.</p></div>
-      <div class="feature"><div class="icon">🔐</div><h3>Exclusive unlocks</h3><p>Choose which leads to unlock instead of buying generic shared lead lists.</p></div>
-    </div></div></section>
+<section id="faq">
+  <div class="wrap">
+    <div class="center">
+      <span class="kicker">FAQ</span>
+      <h2 class="sec-title">Questions, answered.</h2>
+    </div>
+    <div class="faq-list">
+      <details class="faq-item">
+        <summary>Is Roof Scout a roof inspection?</summary>
+        <div class="a">No. Roof Scout is a prospecting and opportunity-identification tool. It uses available imagery and signals to help contractors identify properties that may deserve closer attention. A qualified professional should inspect the roof before making conclusions about its condition.</div>
+      </details>
+      <details class="faq-item">
+        <summary>Do I need a credit card to try it?</summary>
+        <div class="a">No. Your first ZIP scan and 5 lead unlocks are free — no credit card required.</div>
+      </details>
+      <details class="faq-item">
+        <summary>How does Roof Scout identify opportunities?</summary>
+        <div class="a">It analyzes available rooftop imagery and other available signals to prioritize properties for prospecting, ranking visible signs of wear so you know which properties are worth a closer look.</div>
+      </details>
+      <details class="faq-item">
+        <summary>Does Roof Scout guarantee roofing jobs?</summary>
+        <div class="a">No. Roof Scout helps identify prospects. Results depend on the market, homeowner response, your sales process, property condition, and many other factors.</div>
+      </details>
+      <details class="faq-item">
+        <summary>Can I use Roof Scout for my service area?</summary>
+        <div class="a">Yes. Enter any ZIP code to explore available opportunities in the areas you serve.</div>
+      </details>
+    </div>
+  </div>
+</section>
 
-    <section id="roi" class="tint"><div class="wrap roi"><div><div class="kicker">Make the math obvious</div><h2>One closed roof can pay for the prospecting.</h2><p class="sub" style="margin:0">Use the calculator with your own average job value and close rate. The output is an estimate, not a promise.</p></div><div class="roiCard">
-      <div class="field"><label>Average job value <output id="jobOut">$12,000</output></label><input id="job" type="range" min="3000" max="30000" step="500" value="12000" oninput="calc()"></div>
-      <div class="field"><label>Leads you contact <output id="leadOut">25</output></label><input id="leads" type="range" min="5" max="100" step="5" value="25" oninput="calc()"></div>
-      <div class="field"><label>Close rate <output id="rateOut">8%</output></label><input id="rate" type="range" min="2" max="25" step="1" value="8" oninput="calc()"></div>
-      <div class="roiResult"><small>Illustrative expected revenue</small><strong id="roiOut">$24,000</strong><span style="display:block;color:#607089;font-size:11px;margin-top:3px">25 leads × 8% close rate × $12,000 average job</span></div>
-    </div></div></section>
+<section class="final-cta">
+  <div class="wrap">
+    <h2>Your next roofing opportunity could already be on the map.</h2>
+    <p class="sub">Enter a ZIP code and see what Roof Scout finds.</p>
+    <form class="zip-form" id="finalZipForm" novalidate>
+      <input type="text" id="finalZip" inputmode="numeric" maxlength="5" placeholder="Enter ZIP code" aria-label="ZIP code">
+      <button type="submit" class="btn btn-primary">Scan this ZIP →</button>
+    </form>
+    <p class="zip-msg" id="finalZipMsg" role="alert"></p>
+    <p class="fine">No credit card required.</p>
+  </div>
+</section>
 
-    <section id="pricing"><div class="wrap center"><div class="kicker">Simple pricing</div><h2>Start small. Scale when the leads prove useful.</h2><p class="sub">Your current app plans are shown below. No invented guarantees — just scan and unlock limits.</p><div class="pricing">
-      <div class="price"><div class="name">Starter</div><div class="money">$49.99</div><div class="per">per month</div><ul><li>5 ZIP scans / month</li><li>25 lead unlocks / month</li><li>Ranked roof results</li><li>Imagery + evidence</li><li>CSV export + outreach tools</li></ul><a class="btn primary" href="/app">Start with Starter</a></div>
-      <div class="price hot"><div class="name">Pro</div><div class="money">$99.99</div><div class="per">per month</div><ul><li>20 ZIP scans / month</li><li>100 lead unlocks / month</li><li>Everything in Starter</li><li>More territory coverage</li><li>Scout copilot capacity</li></ul><a class="btn" style="background:#fff;color:#122033" href="/app">Start with Pro</a></div>
-    </div></div></section>
+<footer>
+  <div class="wrap">
+    <a class="brand" href="#" style="font-size:16px"><span class="brand-mark" style="width:26px;height:26px;font-size:14px">⌂</span>Roof Scout</a>
+    <nav aria-label="Footer">
+      <a href="#how-it-works">How it works</a>
+      <a href="#pricing">Pricing</a>
+      <a href="#faq">FAQ</a>
+      <a href="/app">Open app</a>
+    </nav>
+    <span>© 2026 Roof Scout. All rights reserved.</span>
+  </div>
+</footer>
 
-    <section id="faq" class="tint"><div class="wrap"><div class="center"><div class="kicker">FAQ</div><h2>Know what Roof Scout is — and isn't.</h2></div><div class="faq">
-      <details open><summary>Is this a roof inspection?</summary><p>No. Roof Scout uses available imagery and AI to estimate visible roof condition. It is a prospecting and prioritization tool, not a physical inspection. Verify conditions on site before quoting or making a technical claim.</p></details>
-      <details><summary>Where do the roof images come from?</summary><p>The app can use aerial imagery and, when aerial imagery is unavailable, street-level sources such as Mapillary or Google Street View when the required keys are configured.</p></details>
-      <details><summary>Can I verify a lead before unlocking it?</summary><p>Yes. The scan shows the available context and lets you review flagged properties. Unlocks are used to reveal the full lead workflow and sales-ready details.</p></details>
-      <details><summary>Do I have to buy leads before I know what I'm getting?</summary><p>Roof Scout is built around scanning an area first, then choosing which results are worth unlocking. That keeps the workflow focused on your territory rather than a generic shared lead marketplace.</p></details>
-    </div></div></section>
-
-    <section class="final"><div class="wrap"><div class="kicker" style="color:#9fc2ff">Your next territory</div><h2 style="color:#fff">Stop looking for roofs.<br>Start looking at the right roofs.</h2><p>Run a free ZIP scan and see what Roof Scout finds in your market.</p><form class="scanBox" style="margin:0 auto;background:rgba(255,255,255,.12);border-color:rgba(255,255,255,.25);max-width:600px" onsubmit="event.preventDefault();goScan();"><input id="zip2" inputmode="numeric" maxlength="5" pattern="[0-9]{5}" placeholder="Enter your ZIP code" style="background:#fff"><button class="btn" style="background:#fff;color:#122033" type="submit">Open my scan →</button></form><div class="fine" style="color:#b9c9dc">Free trial · 1 ZIP scan + 5 lead unlocks</div></div></section>
-  </main>
-
-  <footer><div class="wrap"><span>© 2026 Roof Scout</span><span>AI estimates from imagery — verify on site before quoting work.</span><a href="/app">Open the app</a></div></footer>
-
-  <script>
-    function goScan(){
-      var z=(document.getElementById('zip')||{}).value||'';
-      if(!/^\d{5}$/.test(z)) z=(document.getElementById('zip2')||{}).value||'';
-      if(/^\d{5}$/.test(z)){try{localStorage.setItem('rs_landing_zip',z)}catch(e){};location.href='/app?zip='+encodeURIComponent(z)}else{location.href='/app'}}
+<script>
+// ZIP forms -> validate 5 digits -> hand off to the app
+function wireZipForm(formId, inputId, msgId){
+  var form = document.getElementById(formId);
+  if(!form) return;
+  form.addEventListener('submit', function(e){
+    e.preventDefault();
+    var input = document.getElementById(inputId);
+    var msg = document.getElementById(msgId);
+    var zip = (input.value || '').trim();
+    if(!/^\d{5}$/.test(zip)){
+      input.classList.add('invalid');
+      msg.textContent = 'Please enter a valid 5-digit ZIP code.';
+      input.focus();
+      return;
     }
-    function money(n){return '$'+Math.round(n).toLocaleString('en-US')}
-    function calc(){var j=+document.getElementById('job').value,l=+document.getElementById('leads').value,r=+document.getElementById('rate').value;document.getElementById('jobOut').textContent=money(j);document.getElementById('leadOut').textContent=l;document.getElementById('rateOut').textContent=r+'%';document.getElementById('roiOut').textContent=money(j*l*r/100)}
-    calc();
-  </script>
+    input.classList.remove('invalid');
+    msg.textContent = '';
+    // Clean handoff: the app reads ?zip= and can start a scan
+    window.location.href = '/app?zip=' + encodeURIComponent(zip);
+  });
+}
+wireZipForm('heroZipForm','heroZip','heroZipMsg');
+wireZipForm('finalZipForm','finalZip','finalZipMsg');
+
+// ROI calculator
+(function(){
+  var job = document.getElementById('roiJob'),
+      opps = document.getElementById('roiOpps'),
+      rate = document.getElementById('roiRate');
+  if(!job) return;
+  function fmt(n){ return '$' + Math.round(n).toLocaleString('en-US'); }
+  function update(){
+    var j = +job.value, o = +opps.value, r = +rate.value;
+    document.getElementById('roiJobVal').textContent = fmt(j);
+    document.getElementById('roiOppsVal').textContent = o;
+    document.getElementById('roiRateVal').textContent = r + '%';
+    var rev = j * o * (r/100);
+    document.getElementById('roiResult').textContent = fmt(rev);
+    document.getElementById('roiMath').textContent =
+      fmt(j) + ' × ' + o + ' opportunities × ' + r + '% close rate';
+  }
+  [job,opps,rate].forEach(function(el){ el.addEventListener('input', update); });
+  update();
+})();
+</script>
 </body>
 </html>
