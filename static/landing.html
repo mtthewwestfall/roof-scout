@@ -297,6 +297,92 @@ footer a:hover{color:var(--text)}
   </div>
 </header>
 
+<section id="live-scan" style="padding:56px 0;background:var(--bg-soft)">
+  <div class="wrap" style="max-width:680px">
+    <div class="center">
+      <span class="kicker">Try it live</span>
+      <h2 class="sec-title">See a real lead from your ZIP right now.</h2>
+      <p class="sec-sub">Enter any ZIP code — we'll run a live mini-scan and show you one actual find.</p>
+    </div>
+    <div style="background:#fff;border:1px solid var(--border);border-radius:22px;padding:32px;margin-top:32px;box-shadow:var(--shadow)">
+      <form id="liveScanForm" class="zip-form" style="max-width:none" novalidate>
+        <input type="text" id="liveZip" inputmode="numeric" maxlength="5" placeholder="Enter ZIP code" aria-label="ZIP code">
+        <button type="submit" class="btn btn-primary" id="liveScanBtn">Find a lead →</button>
+      </form>
+      <p class="zip-msg" id="liveScanMsg" role="alert"></p>
+      <div id="liveResult" style="display:none;margin-top:24px;border:1px solid var(--border);border-radius:16px;padding:24px">
+        <div style="display:flex;justify-content:space-between;align-items:start;gap:12px;margin-bottom:12px">
+          <div>
+            <div id="liveAddr" style="font-weight:700;font-size:18px;filter:blur(5px);user-select:none">—</div>
+            <div id="liveCity" style="font-size:14px;color:var(--muted)">—</div>
+          </div>
+          <span id="livePrio" class="prio high">HIGH</span>
+        </div>
+        <p id="liveIssue" style="font-size:14.5px;color:var(--muted);margin-bottom:20px">—</p>
+        <a href="/app" class="btn btn-primary" style="width:100%">Unlock this lead free →</a>
+        <p style="font-size:12.5px;color:var(--muted);text-align:center;margin-top:10px">Free trial · 1 ZIP scan + 5 unlocks · No credit card</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<script>
+(function(){
+  var form = document.getElementById('liveScanForm');
+  if(!form) return;
+  form.addEventListener('submit', function(e){
+    e.preventDefault();
+    var input = document.getElementById('liveZip'),
+        msg = document.getElementById('liveScanMsg'),
+        btn = document.getElementById('liveScanBtn'),
+        result = document.getElementById('liveResult'),
+        zip = (input.value||'').trim();
+    if(!/^\d{5}$/.test(zip)){
+      input.classList.add('invalid'); msg.textContent = 'Enter a valid 5-digit ZIP.';
+      return;
+    }
+    input.classList.remove('invalid'); msg.textContent = '';
+    btn.disabled = true; btn.textContent = 'Scanning…';
+    result.style.display = 'none';
+    fetch('/api/sample-lead-zip',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({zip:zip})})
+    .then(function(r){return r.json()}).then(function(d){
+      btn.disabled = false; btn.textContent = 'Find a lead →';
+      if(!d.ok || !d.lead){ msg.textContent = d.error || 'Scan failed. Try again.'; return; }
+      var lead = d.lead;
+      document.getElementById('liveAddr').textContent = lead.address || 'Address found';
+      document.getElementById('liveCity').textContent = (lead.city?lead.city+', ':'')+lead.zip;
+      document.getElementById('liveIssue').textContent = lead.issue || 'Visible signs of wear detected.';
+      var prio = document.getElementById('livePrio');
+      if(lead.grade<=2){prio.textContent='HIGH';prio.className='prio high';}
+      else if(lead.grade===3){prio.textContent='MEDIUM';prio.className='prio med';}
+      else{prio.textContent='WATCH';prio.className='prio med';}
+      result.style.display = 'block';
+      result.scrollIntoView({behavior:'smooth',block:'nearest'});
+    }).catch(function(){
+      btn.disabled = false; btn.textContent = 'Find a lead →';
+      msg.textContent = 'Something went wrong. Try again.';
+    });
+  });
+})();
+</script>
+
+
+
+<section id="watch" style="padding-top:40px">
+  <div class="wrap">
+    <div class="center">
+      <span class="kicker">Watch it work</span>
+      <h2 class="sec-title">See Roof Scout find a roof in 50 seconds.</h2>
+      <p class="sec-sub">Real scan, real find — 1116 Locust Ave, flagged from aerial imagery.</p>
+    </div>
+    <div style="max-width:800px;margin:36px auto 0;border-radius:22px;overflow:hidden;box-shadow:var(--shadow);border:1px solid var(--border)">
+      <video controls playsinline preload="metadata" style="display:block;width:100%;height:auto" poster="">
+        <source src="/static/roofscout_demo.mp4" type="video/mp4">
+        Your browser does not support the video tag.
+      </video>
+    </div>
+  </div>
+</section>
 <section id="how-it-works">
   <div class="wrap">
     <div class="center">
@@ -461,6 +547,36 @@ footer a:hover{color:var(--text)}
   </div>
 </section>
 
+
+<section id="compare" style="padding-bottom:40px">
+  <div class="wrap" style="max-width:860px">
+    <div class="center">
+      <span class="kicker">The math</span>
+      <h2 class="sec-title">Roof Scout vs. the lead marketplaces.</h2>
+    </div>
+    <div style="overflow-x:auto;margin-top:36px">
+    <table style="width:100%;border-collapse:collapse;font-size:15px;background:#fff;border:1px solid var(--border);border-radius:18px;overflow:hidden;box-shadow:var(--shadow-sm)">
+      <tr style="background:var(--bg-soft)">
+        <th style="padding:16px 20px;text-align:left"></th>
+        <th style="padding:16px 20px;text-align:left;color:var(--blue)">Roof Scout</th>
+        <th style="padding:16px 20px;text-align:left;color:var(--muted)">HomeAdvisor / Angi</th>
+      </tr>
+      <tr><td style="padding:14px 20px;border-top:1px solid var(--border);font-weight:600">Cost per lead</td>
+        <td style="padding:14px 20px;border-top:1px solid var(--border);font-weight:700;color:var(--green)">$1–$2</td>
+        <td style="padding:14px 20px;border-top:1px solid var(--border);color:var(--muted)">$40–$110</td></tr>
+      <tr><td style="padding:14px 20px;border-top:1px solid var(--border);font-weight:600">Who else gets it</td>
+        <td style="padding:14px 20px;border-top:1px solid var(--border);font-weight:700;color:var(--green)">Only you</td>
+        <td style="padding:14px 20px;border-top:1px solid var(--border);color:var(--muted)">4–5 competitors</td></tr>
+      <tr><td style="padding:14px 20px;border-top:1px solid var(--border);font-weight:600">How it's found</td>
+        <td style="padding:14px 20px;border-top:1px solid var(--border);font-weight:700;color:var(--green)">AI spots wear first</td>
+        <td style="padding:14px 20px;border-top:1px solid var(--border);color:var(--muted)">Homeowner happens to search</td></tr>
+      <tr><td style="padding:14px 20px;border-top:1px solid var(--border);font-weight:600">What you get</td>
+        <td style="padding:14px 20px;border-top:1px solid var(--border);font-weight:700;color:var(--green)">Address + imagery + evidence</td>
+        <td style="padding:14px 20px;border-top:1px solid var(--border);color:var(--muted)">Name and phone number</td></tr>
+    </table>
+    </div>
+  </div>
+</section>
 <section id="pricing" class="pricing-sec">
   <div class="wrap">
     <div class="center">
@@ -606,5 +722,18 @@ wireZipForm('finalZipForm','finalZip','finalZipMsg');
   update();
 })();
 </script>
+
+<div id="stickyCta" style="display:none">
+  <a href="/app" class="btn btn-primary" style="width:100%;padding:15px;font-size:16px">Scan this ZIP →</a>
+</div>
+<style>
+@media(max-width:640px){
+  #stickyCta{display:block;position:fixed;bottom:0;left:0;right:0;z-index:200;
+    background:rgba(255,255,255,.96);backdrop-filter:blur(10px);
+    border-top:1px solid var(--border);padding:12px 16px;
+    box-shadow:0 -6px 24px rgba(11,27,51,.1)}
+  body{padding-bottom:76px}
+}
+</style>
 </body>
 </html>

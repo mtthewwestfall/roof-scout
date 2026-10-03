@@ -2571,6 +2571,7 @@ def landing():
 
 
 @app.get("/blog")
+@app.get("/blog/")
 def blog_index():
     return send_from_directory("static/blog", "index.html")
 
