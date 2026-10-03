@@ -1,0 +1,192 @@
+name: Integrate roof scan tuning
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Integrate tuning into core files
+        shell: python
+        run: |
+          from pathlib import Path
+
+          pipeline = Path("pipeline.py")
+          text = pipeline.read_text()
+          marker = "# ROOFSCOUT_CORE_SCAN_TUNING"
+
+          if marker not in text:
+              text = text.replace(
+                  "MICRO_SCAN_POOL = 200",
+                  "MICRO_SCAN_POOL = 500  # ROOFSCOUT: larger candidate pool for better lead recall",
+                  1,
+              )
+
+              block = r'''
+
+# ROOFSCOUT_CORE_SCAN_TUNING
+# Core scan tuning lives here so production behavior does not depend on
+# sitecustomize.py or an external monkey-patch module.
+_CORE_ORIGINAL_OVERPASS_BUILDINGS = _overpass_buildings
+
+def _overpass_buildings(zipcode: str, lat0: float, lng0: float, limit: int = 120):
+    return _CORE_ORIGINAL_OVERPASS_BUILDINGS(
+        zipcode, lat0, lng0, limit=max(int(limit), 600)
+    )
+
+_CORE_ORIGINAL_CANDIDATE_ROOFS = candidate_roofs
+
+def candidate_roofs(zipcode: str, center, count: int, progress=None,
+                    exclude_cells=None) -> tuple[list[dict], bool]:
+    houses, footprints_ok = _CORE_ORIGINAL_CANDIDATE_ROOFS(
+        zipcode, center, count, progress, exclude_cells=exclude_cells
+    )
+    if len(houses) <= 1:
+        return houses, footprints_ok
+
+    # Spread the available real footprints across a 5x5 grid around the ZIP
+    # center so a dense neighborhood cannot consume the entire scan.
+    lat0, lng0 = center[0], center[1]
+    bins = {}
+    for h in houses:
+        dy = (h["lat"] - lat0) * 111.0
+        dx = (h["lng"] - lng0) * 111.0 * max(
+            0.2, math.cos(math.radians(lat0))
+        )
+        bx = max(-2, min(2, int(dx / 0.9)))
+        by = max(-2, min(2, int(dy / 0.9)))
+        bins.setdefault((bx, by), []).append(h)
+
+    for bucket in bins.values():
+        bucket.sort(key=lambda h: (h["lat"] - lat0) ** 2 +
+                    (h["lng"] - lng0) ** 2)
+
+    ordered = []
+    keys = sorted(bins, key=lambda k: k[0] * k[0] + k[1] * k[1])
+    while keys:
+        next_keys = []
+        for key in keys:
+            bucket = bins[key]
+            if bucket:
+                ordered.append(bucket.pop(0))
+            if bucket:
+                next_keys.append(key)
+        keys = next_keys
+    return ordered, footprints_ok
+
+_ROOF_TARP_RULE = (
+    "\\n\\nTARP / SEVERE-DAMAGE RULE: A temporary tarp visibly covering the target "
+    "roof is direct evidence of active roof failure or storm repair. A "
+    "substantial roof tarp supports grade 1; a smaller localized roof tarp "
+    "supports grade 2 unless other visible evidence makes the roof failing. "
+    "Do not require blue: black, gray, white, green, brown, and other "
+    "temporary coverings count when clearly on the roof. Also look for large "
+    "bare/exposed areas, missing material, collapsed or sagging sections, and "
+    "obvious emergency patches. Do not confuse pool covers, yard tarps, "
+    "vehicle covers, tents, or ground objects with a roof tarp."
+)
+if _ROOF_TARP_RULE not in GRADE_PROMPT:
+    GRADE_PROMPT += _ROOF_TARP_RULE
+if _ROOF_TARP_RULE not in PRESCREEN_PROMPT:
+    PRESCREEN_PROMPT += _ROOF_TARP_RULE
+
+_CORE_ORIGINAL_PRESCREEN_DAMAGE = prescreen_damage
+
+def prescreen_damage(api_key, cands, count, progress=None, prescreener=None):
+    target = max(int(count), 30) if int(count) >= 20 else int(count)
+    return _CORE_ORIGINAL_PRESCREEN_DAMAGE(
+        api_key, cands, target, progress, prescreener=prescreener
+    )
+
+_CORE_ORIGINAL_GRADE_ROOFS = grade_roofs
+
+def grade_roofs(api_key, houses, progress=None, grader=None, evidencer=None):
+    out = _CORE_ORIGINAL_GRADE_ROOFS(
+        api_key, houses, progress, grader=grader, evidencer=evidencer
+    )
+    for h in out:
+        text = " ".join(str(x) for x in (h.get("evidence") or []))
+        text += " " + str(h.get("obstruction") or "")
+        lower = text.lower()
+        h["tarp_detected"] = "tarp" in lower or "tarpaulin" in lower
+        if h["tarp_detected"]:
+            h["tarp_confidence"] = "high" if h.get("grade") in (1, 2) else "medium"
+    return out
+
+_CORE_ORIGINAL_SORT_LEADS = sort_leads
+
+def sort_leads(houses):
+    return sorted(
+        houses,
+        key=lambda h: (
+            bool(h.get("needs_review")),
+            _GRADE_ORDER.get(h.get("grade", 0), 5),
+            not bool(h.get("tarp_detected")),
+            h.get("address", ""),
+        ),
+    )
+'''
+              text += block
+              pipeline.write_text(text)
+
+          server = Path("server.py")
+          s = server.read_text()
+          s = s.replace(
+              'int(body.get("count", 20))',
+              'int(body.get("count", 30))',
+              1,
+          )
+          s = s.replace(
+              'count = 20\n\n    def _run():',
+              'count = 30\n\n    def _run():',
+              1,
+          )
+          server.write_text(s)
+
+          ui = Path("static/index.html")
+          u = ui.read_text()
+          u = u.replace(
+              '<option value="20" selected>20 roofs</option>\n        <option value="30">30 roofs</option>',
+              '<option value="20">20 roofs</option>\n        <option value="30" selected>30 roofs</option>',
+              1,
+          )
+          u = u.replace(
+              'id="pinCountEcho">20</span>',
+              'id="pinCountEcho">30</span>',
+              1,
+          )
+          u = u.replace(
+              "(($('countSel') || {}).value || '20')",
+              "(($('countSel') || {}).value || '30')",
+              1,
+          )
+          ui.write_text(u)
+
+          sc = Path("sitecustomize.py")
+          if sc.exists():
+              sc.unlink()
+
+      - name: Validate Python syntax
+        run: python -m py_compile pipeline.py server.py
+
+      - name: Verify core tuning is present
+        run: |
+          grep -q 'ROOFSCOUT_CORE_SCAN_TUNING' pipeline.py
+          grep -q 'MICRO_SCAN_POOL = 500' pipeline.py
+          grep -q 'limit=max(int(limit), 600)' pipeline.py
+          grep -q 'tarp_detected' pipeline.py
+          test ! -f sitecustomize.py
+
+      - name: Commit integrated changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add pipeline.py server.py static/index.html sitecustomize.py
+          git diff --cached --quiet || git commit -m "Integrate roof scan tuning into core pipeline"
+          git push
