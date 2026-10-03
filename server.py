@@ -671,13 +671,17 @@ def tmp_scan_address():
         houses = [{"key": "tmp1", "image_b64": img_b64, "lat": lat, "lng": lng}]
         results = grade_roofs(api_key, houses)
         # Include the image for display
+        r = results[0] if results else {}
         return jsonify({
             "ok": True,
-            "grade": results[0].get("grade") if results else None,
-            "results": results,
-            "image_b64": img_b64[:100] + "..." if len(img_b64) > 100 else img_b64,
-            "source": source,
-            "zoom": zoom
+            "grade": r.get("grade"),
+            "confidence": r.get("confidence"),
+            "material": r.get("primary_material"),
+            "pitch": r.get("pitch_estimate"),
+            "evidence": r.get("evidence", []),
+            "likely_cause": r.get("likely_cause", ""),
+            "damage_boxes": len(r.get("damage_boxes", [])),
+            "source": source
         })
     except Exception as e:
         import traceback
