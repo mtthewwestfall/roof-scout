@@ -1595,6 +1595,43 @@ def _run_address_scan(job_id: str, house: dict, grader=None):
         _fail_job(job_id, f"Scan failed: {e}. Your scan was refunded.")
 
 
+
+@app.get("/api/address-suggest")
+def address_suggest():
+    """Return address suggestions for autocomplete (proxies Nominatim)."""
+    from flask import request
+    import urllib.request, urllib.parse, json
+    q = request.args.get("q", "").strip()
+    if len(q) < 3:
+        return jsonify({"suggestions": []})
+    try:
+        params = urllib.parse.urlencode({
+            "q": q, "countrycodes": "us", "format": "json",
+            "addressdetails": 1, "limit": 6
+        })
+        url = f"https://nominatim.openstreetmap.org/search?{params}"
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "RoofScout/1.0 (getveridatenow.com)",
+            "Accept": "application/json"
+        })
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+        suggestions = []
+        for r in data:
+            a = r.get("address", {})
+            # Only suggest results with house number (real addresses)
+            if a.get("house_number") and a.get("road"):
+                short = r["display_name"].split(",")[:4]
+                suggestions.append({
+                    "display": ", ".join(short),
+                    "full": r["display_name"],
+                    "lat": r["lat"],
+                    "lon": r["lon"]
+                })
+        return jsonify({"suggestions": suggestions})
+    except Exception as e:
+        return jsonify({"suggestions": [], "error": str(e)[:100]})
+
 @app.post("/api/scan")
 def start_scan():
     user, err = _require_verified()

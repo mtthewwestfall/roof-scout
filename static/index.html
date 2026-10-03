@@ -521,27 +521,23 @@
         }
         suggestTimer = setTimeout(async () => {
           try {
-            const res = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=6&addressdetails=1&q=' + encodeURIComponent(val), {
-              headers: {'Accept': 'application/json'}
-            });
-            const results = await res.json();
+            const res = await fetch('/api/address-suggest?q=' + encodeURIComponent(val));
+            const data = await res.json();
+            const results = data.suggestions || [];
             if (!results.length) {
               suggest.style.display = 'none';
               return;
             }
             suggest.innerHTML = results.map((r, i) => {
-              const short = r.display_name.split(',').slice(0, 4).join(',');
-              return `<div data-idx="${i}" style="padding:10px 14px; cursor:pointer; font-size:13.5px; border-bottom:1px solid #f0f4f8;" onmouseover="this.style.background='#f2f7fb'" onmouseout="this.style.background='#fff'">${short}</div>`;
+              return `<div data-idx="${i}" style="padding:10px 14px; cursor:pointer; font-size:13.5px; border-bottom:1px solid #f0f4f8;" onmouseover="this.style.background='#f2f7fb'" onmouseout="this.style.background='#fff'">${r.display}</div>`;
             }).join('');
             suggest.querySelectorAll('div[data-idx]').forEach(el => {
               el.onclick = () => {
-                input.value = results[parseInt(el.dataset.idx)].display_name;
+                input.value = results[parseInt(el.dataset.idx)].full;
                 suggest.style.display = 'none';
                 input.focus();
               };
             });
-            // Store results for click handler
-            suggest._results = results;
             suggest.style.display = 'block';
           } catch (e) {
             suggest.style.display = 'none';
