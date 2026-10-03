@@ -1706,8 +1706,16 @@ def sample_lead_zip():
                             "error": "No roofs found in that area."}), 400
         picks = pipeline.prescreen_damage(GEMINI_KEY, cands, 5, None)
         if not picks:
-            # No damage found: use the first candidate as a "typical roof"
-            picks = cands[:1]
+            # No damage found in prescreen: grab images for a few and grade anyway
+            import base64 as _b64
+            for c in cands[:3]:
+                try:
+                    img, _z, _s = pipeline.roof_image(c["lat"], c["lng"], z=19)
+                    if img:
+                        c["image_b64"] = _b64.b64encode(img).decode()
+                except Exception:
+                    pass
+            picks = [c for c in cands[:3] if c.get("image_b64")] or cands[:1]
         graded = pipeline.grade_roofs(GEMINI_KEY, picks[:3], None)
         # Pick the worst grade
         best = None
@@ -1737,6 +1745,8 @@ def sample_lead_zip():
         conn.close()
         return jsonify({"ok": True, "cached": False, "lead": lead})
     except Exception as e:
+        import traceback
+        print(f"sample-lead-zip failed: {e}\n{traceback.format_exc()}")
         try:
             conn.close()
         except Exception:
