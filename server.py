@@ -449,11 +449,66 @@ def _unlocked_keys(conn, user_id: str) -> set:
                          (user_id,))}
 
 
+def _validate_lead_report(l: dict) -> dict:
+    """Report safety net (independent of Gemini prompts).
+
+    - Grade 1 requires grade1_verified=True, otherwise downgraded.
+    - Definitive diagnostic labels are softened to evidence-based wording
+      unless the finding is verified.
+    - Ensures imagery source/date fields exist.
+    """
+    l = dict(l)
+    # Imagery provenance: default to Esri unless marked otherwise.
+    if not l.get("imagery_source"):
+        img = str(l.get("imagery") or "").lower()
+        if "street" in img or "mapillary" in img:
+            l["imagery_source"] = "Street-level imagery"
+        else:
+            l["imagery_source"] = "Esri World Imagery"
+    if not l.get("imagery_date"):
+        l["imagery_date"] = "Imagery capture date unavailable."
+    # Grade 1 safety: never display unverified Grade 1.
+    if l.get("grade") == 1 and not l.get("grade1_verified"):
+        l["grade"] = l.get("_pre_qc_grade", 2) if l.get("_pre_qc_grade") in (2, 3) else 2
+        l["grade1_verified"] = False
+        ev = list(l.get("evidence") or [])
+        ev.append("Grade 1 was not verified by second-pass review; "
+                  "shown as Grade 2 pending human verification.")
+        l["evidence"] = ev[:4]
+
+    # Soften definitive diagnostic labels on annotations.
+    _DIAGNOSTIC_REPLACEMENTS = [
+        ("damaged flashing", "possible flashing concern — review recommended"),
+        ("exposed roof underlayment", "possible exposed roofing material — review recommended"),
+        ("exposed underlayment", "possible exposed roofing material — review recommended"),
+        ("deteriorated roofing", "possible surface deterioration — review recommended"),
+        ("deteriorated", "possible deterioration — review recommended"),
+    ]
+    boxes = l.get("damage_boxes") or []
+    if boxes and not l.get("grade1_verified"):
+        new_boxes = []
+        for b in boxes:
+            b = dict(b)
+            label = str(b.get("label", ""))
+            low = label.lower()
+            for bad, good in _DIAGNOSTIC_REPLACEMENTS:
+                if bad in low:
+                    label = good
+                    break
+            # Never let a label claim confirmed damage without verification.
+            if label.lower().startswith("damaged ") and not l.get("grade1_verified"):
+                label = "possible " + label[8:] + " — review recommended"
+            b["label"] = label
+            new_boxes.append(b)
+        l["damage_boxes"] = new_boxes
+    return l
+
+
 def _shape_leads(conn, leads: list[dict], user: dict,
                  single: bool = False) -> list[dict]:
     """Mask addresses + jitter pins until a lead is unlocked (all plans)."""
     if user.get("is_admin") or single:
-        return [{**l, "lead_key": _lead_key(l), "locked": False}
+        return [{**_validate_lead_report(l), "lead_key": _lead_key(l), "locked": False}
                 for l in leads]
     unlocked = _unlocked_keys(conn, user["id"])
     rejected = {r[0] for r in
@@ -462,6 +517,7 @@ def _shape_leads(conn, leads: list[dict], user: dict,
                              (user["id"],))}
     out = []
     for l in leads:
+        l = _validate_lead_report(l)
         key = _lead_key(l)
         if key in rejected:
             continue  # customer already passed on this one
@@ -1336,8 +1392,12 @@ def _set_job(job_id: str, **kw):
                 (job_id, job.get("owner", ""), json.dumps(job.get("leads") or []),
                  job.get("area", ""), job.get("msg", ""), time.time()))
             conn.commit()
-        except Exception:
-            pass
+        except Exception as e:
+            # Never silently swallow persistence failures — the user must know
+            # if their leads weren't saved.
+            print(f"CRITICAL: scan job {job_id} persistence failed: {e}", flush=True)
+            with _jobs_lock:
+                _jobs[job_id]["persist_error"] = str(e)[:200]
         finally:
             try:
                 conn.close()
@@ -1470,7 +1530,8 @@ def _do_widened_scan(job_id, zipcode, center, count, user_id, progress,
         for h in picks:
             h["key"] = (h.get("address") or "") + "|" + h.get("postcode", "")
         _run_houses(job_id, picks, area, cache=cache, grader=grader,
-                    user_id=user_id, footprints_ok=footprints_ok)
+                    user_id=user_id, footprints_ok=footprints_ok,
+                    candidates=len(cands))
         if _jobs.get(job_id, {}).get("leads"):
             found = True
             break
@@ -1496,14 +1557,14 @@ def _do_widened_scan(job_id, zipcode, center, count, user_id, progress,
 
 def _run_houses(job_id: str, houses: list[dict], area: str,
                cache: tuple | None = None, grader=None, user_id=None,
-               footprints_ok: bool = True):
+               footprints_ok: bool = True, candidates: int = 0):
     """Imagery + grading + sort tail, shared by zip and single-address scans."""
     try:
         def progress(phase, done, total, msg):
             _set_job(job_id, phase=phase, done=done, total=total, msg=msg)
 
         _set_job(job_id, phase="imagery", done=0, total=len(houses),
-                 msg="Pulling aerial views…")
+                 msg="Pulling aerial views…", candidates=candidates)
 
         def grab(h):
             img, zoom, src = pipeline.roof_image(h["lat"], h["lng"])
@@ -2376,6 +2437,11 @@ def scan_status(job_id: str):
             conn.close()
         out["area"] = job.get("area")
         out["evaluated"] = job.get("evaluated", 0)
+        out["requested"] = job.get("total", 0)
+        out["candidates"] = job.get("candidates", 0)
+        if job.get("persist_error"):
+            out["persist_warning"] = (
+                "Leads may not have been saved: " + job["persist_error"])
     if job["status"] == "error":
         out["error"] = job.get("error")
     return jsonify(out)

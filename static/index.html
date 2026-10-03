@@ -652,7 +652,16 @@
         if (!j.ok) throw new Error(j.error || "Scan failed");
         const pm = $('progMsg');
         if (pm) pm.innerHTML = `${esc(j.msg || 'Working…')}<br><span class="dim">${j.done || 0}/${j.total || 0}</span>`;
-        if (j.status === 'done') { renderResults(j.leads || [], j.area, j.footprints_ok, j.evaluated); return; }
+        if (j.status === 'done') {
+          renderResults(j.leads || [], j.area, j.footprints_ok, j.evaluated,
+            { requested: j.requested, candidates: j.candidates, evaluated: j.evaluated });
+          // Refresh My Leads automatically so new leads appear without reload.
+          if (typeof loadLeadsTab === 'function') loadLeadsTab();
+          if (j.persist_warning && pm) {
+            pm.innerHTML += `<br><span style="color:#dc2626;">⚠️ ${esc(j.persist_warning)}</span>`;
+          }
+          return;
+        }
         if (j.status === 'error') throw new Error(j.error || "Scan failed");
       }
       throw new Error("Scan timed out — try again.");
@@ -866,8 +875,36 @@
       return `${who}We reviewed recent aerial imagery of the roof at ${loc || 'this property'} and ${verdict} ${close}`;
     }
 
+    /* ---------- structured report: observed / interpretation / next step ---------- */
+    function evidenceStatus(lead) {
+      if (lead.grade === 1 && lead.grade1_verified) return 'Verified severe';
+      if (lead.grade === 1) return 'Possible concern';
+      if (lead.grade === 2) return 'Possible concern';
+      if (lead.grade === 3) return 'Unclear';
+      if (lead.grade === 0) return 'Unclear';
+      return 'No significant visible concern';
+    }
+    function reportStructure(lead) {
+      const status = evidenceStatus(lead);
+      const observed = (lead.evidence || []).map((e) => `<li>${esc(e)}</li>`).join('');
+      const interp = lead.likely_cause ? esc(lead.likely_cause) : 'Not determined from available imagery.';
+      const imagerySrc = lead.imagery_source || 'Esri World Imagery';
+      const imageryDate = lead.imagery_date || 'Imagery capture date unavailable.';
+      return `
+        <div class="lr-sec"><div class="lr-label">Observed</div>
+          ${observed ? `<ul>${observed}</ul>` : '<span class="dim">No specific visual observations recorded.</span>'}</div>
+        <div class="lr-sec"><div class="lr-label">AI interpretation</div><div>${interp}</div></div>
+        <div class="lr-sec"><div class="lr-label">Recommended next step</div>
+          <div>Verify from closer imagery or during an on-site roof inspection.</div></div>
+        <div class="lr-sec"><div class="lr-label">Evidence status</div><div><b>${esc(status)}</b></div></div>
+        <div class="lr-sec"><div class="lr-label">Imagery</div>
+          <div class="dim" style="font-size:12px;">Source: ${esc(imagerySrc)}<br>Date: ${esc(imageryDate)}</div></div>
+        <div class="lr-sec"><div class="lr-label">Limitation</div>
+          <div class="dim" style="font-size:12px;">AI-assisted aerial screening — not a physical roof inspection. Cannot establish concealed moisture, deck condition, ventilation, exact roof age, or conditions not visible from the imagery.</div></div>`;
+    }
+
     /* ---------- results ---------- */
-    function renderResults(leads, area, footprintsOk, evaluated) {
+    function renderResults(leads, area, footprintsOk, evaluated, counts) {
       markers.forEach((m) => map.removeLayer(m));
       markers = [];
       currentLeads = leads;
@@ -887,10 +924,17 @@
       const head = document.createElement('div');
       head.style.cssText = 'margin-bottom:12px;color:#5b6b82;font-size:14px;';
       const flaggedCount = leads.filter((l) => l.needs_review).length;
-      const evalBit = lastEvaluated > 0 ? ` · <b>${lastEvaluated}</b> propert${lastEvaluated === 1 ? 'y' : 'ies'} evaluated` : '';
+      // Honest scan counts: requested / candidates screened / deep-reviewed / leads.
+      const c = counts || {};
+      const countBits = [];
+      if (c.requested) countBits.push(`Requested: <b>${c.requested}</b>`);
+      if (c.candidates) countBits.push(`Candidates screened: <b>${c.candidates}</b>`);
+      if (c.evaluated || evaluated) countBits.push(`Deep-reviewed: <b>${c.evaluated || evaluated}</b>`);
+      countBits.push(`Leads found: <b>${leads.length}</b>`);
+      const countHtml = `<div style="margin-top:6px;font-size:12.5px;color:#64748b;">${countBits.join(' &nbsp;·&nbsp; ')}</div>`;
       head.innerHTML = leads.length
-        ? `<b>${leads.length}</b> damaged roof${leads.length === 1 ? '' : 's'} found${area ? ` in <b>${esc(area)}</b>` : ''} — worst first${evalBit}${flaggedCount ? ` · <b style="color:#b45309;">${flaggedCount} flagged for review</b>` : ''}`
-        : `No visibly damaged roofs found${area ? ` in <b>${esc(area)}</b>` : ''}.${evalBit} Try another ZIP.`;
+        ? `<b>${leads.length}</b> damaged roof${leads.length === 1 ? '' : 's'} found${area ? ` in <b>${esc(area)}</b>` : ''} — worst first${flaggedCount ? ` · <b style="color:#b45309;">${flaggedCount} flagged for review</b>` : ''}${countHtml}`
+        : `No visibly damaged roofs found${area ? ` in <b>${esc(area)}</b>` : ''}.${countHtml} Try another ZIP.`;
       sidebar.appendChild(head);
 
       if (!leads.length) {
@@ -972,6 +1016,7 @@
 
           ${ev ? `<div class="section-title">Visual Evidence:</div><ul>${ev}</ul>` : ''}
           ${repairs ? `<div class="section-title">What needs done:</div><ul>${repairs}</ul>` : ''}
+          ${reportStructure(lead)}
 
           ${actionsHtml}
         `;
