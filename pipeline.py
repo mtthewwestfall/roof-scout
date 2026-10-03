@@ -978,8 +978,8 @@ GRADE_PROMPT = """You are a senior forensic roof inspector grading residential r
 
 5 SOLID — looks new or like-new: uniform color, crisp shingle lines, clean ridges, no visible wear.
 4 HEALTHY — minor cosmetic aging only; clearly years of life left.
-3 AGING — visible wear: patchy granule loss (shiny or mottled sheen), slight curling or lifting at edges, light moss or algae staining. Worth watching.
-2 WORN — needs repair soon: missing, cracked, or lifted shingles; heavy moss or algae coverage; rusted or lifting flashing; debris buildup or ponding.
+3 AGING — visible wear from aerial view: uneven color or discoloration across slopes, dark streaking, visible moss/algae (greenish tint), blotchy or faded areas, minor debris. Worth watching.
+2 WORN — needs repair soon: clearly missing shingles (dark gaps), cracked or lifted sections visible from above, heavy moss coverage, rusted or damaged flashing visible, obvious patching with mismatched material, debris buildup or ponding on flat sections.
 1 FAILING — needs replacement now: sagging or uneven roof deck, blue tarps, large bare or patched areas, collapsed sections, structural deformation.
 0 UNVERIFIABLE — the target roof cannot be assessed (image too coarse to make out shingles, roof mostly out of frame, deep shadow, or tree canopy visibly covering the roof). Never guess; use 0. State the ACTUAL reason you cannot assess it — never default to tree cover.
 
