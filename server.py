@@ -1687,9 +1687,13 @@ def sample_lead_zip():
         row = conn.execute("SELECT lead_json FROM sample_zip_cache WHERE zip=?",
                            (zipcode,)).fetchone()
         if row:
-            conn.close()
-            return jsonify({"ok": True, "cached": True,
-                            "lead": json.loads(row[0])})
+            cached_lead = json.loads(row[0])
+            # Invalidate cache entries without a real address
+            if cached_lead.get("address") and cached_lead["address"] != "Address withheld":
+                conn.close()
+                return jsonify({"ok": True, "cached": True, "lead": cached_lead})
+            conn.execute("DELETE FROM sample_zip_cache WHERE zip=?", (zipcode,))
+            conn.commit()
     except Exception:
         pass
     # Not cached: run a lightweight scan (15 candidates, grade top 3)
