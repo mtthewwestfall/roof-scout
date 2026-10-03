@@ -1670,6 +1670,50 @@ def reverse_geocode():
 
 
 
+
+@app.get("/api/storm-events")
+def storm_events():
+    """Recent hail/wind events near a location (NOAA Storm Events via folkweather EDR)."""
+    from flask import request
+    import urllib.request, json, math
+    try:
+        lat = float(request.args.get("lat", "0"))
+        lng = float(request.args.get("lng", "0"))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "Invalid coordinates"}), 400
+    radius_mi = float(request.args.get("radius", "10") or 10)
+    # degrees approx: 1 deg lat ~ 69 mi, lng adjusted by cos(lat)
+    dlat = radius_mi / 69.0
+    dlng = radius_mi / (69.0 * max(0.3, math.cos(math.radians(lat))))
+    bbox = f"{lng-dlng:.4f},{lat-dlat:.4f},{lng+dlng:.4f},{lat+dlat:.4f}"
+    events = []
+    for coll in ("hail", "wind"):
+        try:
+            url = f"https://folkweather.com/edr/collections/{coll}/items?bbox={bbox}&limit=100"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=20) as r:
+                data = json.loads(r.read())
+            for feat in data.get("features", []):
+                p = feat.get("properties", {})
+                geom = feat.get("geometry", {}).get("coordinates", [0, 0])
+                # distance in miles (haversine approx)
+                elat, elng = geom[1], geom[0]
+                dm = math.sqrt(((elat-lat)*69.0)**2 + ((elng-lng)*69.0*math.cos(math.radians(lat)))**2)
+                if dm <= radius_mi:
+                    events.append({
+                        "type": p.get("event_type"),
+                        "date": (p.get("datetime") or "")[:10],
+                        "magnitude": p.get("magnitude"),
+                        "unit": p.get("magnitude_unit"),
+                        "distance_mi": round(dm, 1),
+                        "narrative": (p.get("event_narrative") or "")[:200],
+                    })
+        except Exception:
+            pass
+    # Sort by date desc, then by magnitude desc
+    events.sort(key=lambda e: (e["date"], e["magnitude"] or 0), reverse=True)
+    return jsonify({"ok": True, "count": len(events), "events": events[:20]})
+
 @app.post("/api/sample-lead-zip")
 def sample_lead_zip():
     """Return a sample lead from the visitor's ZIP (cached per ZIP)."""
@@ -1734,6 +1778,8 @@ def sample_lead_zip():
             "grade": grade,
             "issue": (lead_src.get("issue") or lead_src.get("damage") or
                       "Visible wear detected")[:120],
+            "lat": lead_src.get("lat"),
+            "lng": lead_src.get("lng"),
         }
         try:
             conn.execute("INSERT OR REPLACE INTO sample_zip_cache VALUES (?,?,?)",
