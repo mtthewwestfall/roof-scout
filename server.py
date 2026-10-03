@@ -668,7 +668,7 @@ def tmp_scan_address():
         if not api_key:
             return jsonify({"ok": False, "error": "no_api_key"}), 500
         img_b64 = base64.b64encode(img_bytes).decode()
-        houses = [{"id": "tmp1", "image_b64": img_b64, "lat": lat, "lng": lng}]
+        houses = [{"key": "tmp1", "image_b64": img_b64, "lat": lat, "lng": lng}]
         results = grade_roofs(api_key, houses)
         # Include the image for display
         return jsonify({
