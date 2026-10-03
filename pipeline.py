@@ -408,7 +408,59 @@ def geocode_address(query: str):
 
     Requires a house number + street so the aerial view centers on a real
     rooftop, not a city centroid. Nominatim first, US Census Geocoder as
-    fallback (OSM misses real streets)."""
+    fallback (OSM misses real streets). Fuzzy-matches when the exact
+    input doesn't hit — tries variations so a typo doesn't return empty.
+    """
+    # Try exact first
+    result = _try_geocode(query)
+    if result:
+        return result
+    # Fuzzy: try with common variations
+    variations = []
+    q_lower = query.lower().strip()
+    # Try adding USA if no country hint
+    if "usa" not in q_lower and "united states" not in q_lower:
+        variations.append(query + ", USA")
+    # Try stripping apartment/unit suffixes that confuse geocoders
+    import re
+    cleaned = re.sub(r'\s+(apt|unit|suite|#)\s*\w*\s*$', '', query, flags=re.I).strip()
+    if cleaned != query:
+        variations.append(cleaned)
+    for v in variations:
+        result = _try_geocode(v)
+        if result:
+            result["_fuzzy_matched"] = True
+            result["_original_query"] = query
+            return result
+    # Last resort: broader search, take best house-number match
+    d = _nominatim("/search", {"q": query, "countrycodes": "us",
+                               "format": "json", "addressdetails": 1,
+                               "limit": 5})
+    if d:
+        for r in d:
+            a = r.get("address", {})
+            house, road = a.get("house_number"), a.get("road")
+            if house and road:
+                city = (a.get("city") or a.get("town") or a.get("village")
+                        or a.get("hamlet") or "")
+                return {
+                    "address": f"{house} {road}",
+                    "city": city,
+                    "state": a.get("state", ""),
+                    "postcode": (a.get("postcode") or "")[:5],
+                    "county": (a.get("county") or "").replace(" County", ""),
+                    "area": a.get("suburb") or a.get("neighbourhood") or a.get("quarter") or "",
+                    "lat": float(r["lat"]),
+                    "lng": float(r["lon"]),
+                    "_fuzzy_matched": True,
+                    "_original_query": query,
+                }
+    # Nominatim missed it — try the Census geocoder before giving up.
+    return _census_geocode(query)
+
+
+def _try_geocode(query: str):
+    """Single geocode attempt, returns dict or None."""
     d = _nominatim("/search", {"q": query, "countrycodes": "us",
                                "format": "json", "addressdetails": 1,
                                "limit": 1})
@@ -429,8 +481,7 @@ def geocode_address(query: str):
                 "lat": float(r["lat"]),
                 "lng": float(r["lon"]),
             }
-    # Nominatim missed it — try the Census geocoder before giving up.
-    return _census_geocode(query)
+    return None
 
 
 def geocode_place(query: str):
