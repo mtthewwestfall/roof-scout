@@ -646,6 +646,30 @@ def _sv_fetch(lat: float, lng: float) -> bytes | None:
 
 
 
+
+@app.post("/api/tmp/grade-image")
+def tmp_grade_image():
+    """TEMPORARY: Grade a single image via base64."""
+    from flask import request
+    import base64
+    data = request.get_json(force=True)
+    img_b64 = data.get("image_b64", "")
+    if not img_b64:
+        return jsonify({"ok": False, "error": "no_image"}), 400
+    try:
+        import sys
+        sys.path.insert(0, ".")
+        from pipeline import grade_roofs
+        import os
+        api_key = os.environ.get("GEMINI_API_KEY", "")
+        if not api_key:
+            return jsonify({"ok": False, "error": "no_api_key"}), 500
+        houses = [{"id": "tmp1", "image_b64": img_b64}]
+        results = grade_roofs(api_key, houses)
+        return jsonify({"ok": True, "results": results})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 @app.get("/api/tmp/fetch-imagery")
 def tmp_fetch_imagery():
     """TEMPORARY: Fetch Street View + Google Satellite for given coords."""
