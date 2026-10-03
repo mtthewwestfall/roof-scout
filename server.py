@@ -2614,6 +2614,12 @@ def landing():
     return send_from_directory("static", "landing.html")
 
 
+@app.get("/roofing-leads")
+@app.get("/roofing-leads/")
+def roofing_leads_seo():
+    return send_from_directory("static", "roofing-leads.html")
+
+
 
 
 @app.get("/blog")
