@@ -20,12 +20,25 @@ try:
     pipeline.MICRO_SCAN_POOL = max(getattr(pipeline, "MICRO_SCAN_POOL", 200), 500)
 
     # Spread candidate roofs geographically so a dense pocket next to the ZIP
-    # centroid does not consume the whole scan.
+    # centroid does not consume the whole scan. Never promote blind grid points
+    # to roof candidates: only OSM building footprints are valid scan targets.
     _original_candidates = pipeline.candidate_roofs
 
     def _spread_candidates(zipcode, center, count, progress=None, exclude_cells=None):
         houses, footprints_ok = _original_candidates(
             zipcode, center, count, progress, exclude_cells=exclude_cells)
+
+        # A failed/empty footprint lookup must never turn into arbitrary road,
+        # forest, yard, or field coordinates that get sent to the vision model.
+        if not footprints_ok:
+            return [], False
+
+        # The legacy candidate function tops up with blind grid points when
+        # footprints are thin. Those points have no building tag; discard them.
+        houses = [h for h in houses if h.get("building")]
+        if not houses:
+            return [], True
+
         if len(houses) <= 1:
             return houses, footprints_ok
 
