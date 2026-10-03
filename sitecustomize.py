@@ -141,17 +141,10 @@ try:
 
     pipeline.candidate_roofs = _spread_candidates
 
-    tarp_rule = (
-        "\n\nTARP / SEVERE-DAMAGE RULE: A temporary tarp visibly covering the target "
-        "roof is direct evidence of active roof failure or storm repair. A "
-        "substantial roof tarp supports grade 1; a smaller localized roof tarp "
-        "supports grade 2 unless other visible evidence makes the roof failing. "
-        "Do not require blue: black, gray, white, green, brown, and other "
-        "temporary coverings count when clearly on the roof. Also look for large "
-        "bare/exposed areas, missing material, collapsed or sagging sections, and "
-        "obvious emergency patches. Do not confuse pool covers, yard tarps, "
-        "vehicle covers, tents, or ground objects with a roof tarp."
-    )
+    tarp_rule = """
+
+TARP / SEVERE-DAMAGE RULE: A temporary tarp visibly covering the target roof is direct evidence of active roof failure or storm repair. A substantial roof tarp supports grade 1; a smaller localized roof tarp supports grade 2 unless other visible evidence makes the roof failing. Do not require blue: black, gray, white, green, brown, and other temporary coverings count when clearly on the roof. Also look for large bare/exposed areas, missing material, collapsed or sagging sections, and obvious emergency patches. Do not confuse pool covers, yard tarps, vehicle covers, tents, or ground objects with a roof tarp.
+"""
     if tarp_rule not in pipeline.GRADE_PROMPT:
         pipeline.GRADE_PROMPT += tarp_rule
     if tarp_rule not in pipeline.PRESCREEN_PROMPT:
