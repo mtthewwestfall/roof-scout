@@ -91,8 +91,9 @@ section{padding:88px 0}
 .dash-leads{padding:16px 20px;display:flex;flex-direction:column;gap:12px;background:#fff}
 .lead-card{border:1px solid var(--border);border-radius:14px;padding:14px 16px;display:flex;gap:14px;align-items:flex-start}
 .lead-thumb{width:52px;height:52px;border-radius:10px;background:linear-gradient(135deg,#c9d6ea,#aebfdf);flex-shrink:0;position:relative;overflow:hidden}
-.lead-thumb::after{content:"";position:absolute;inset:8px;border:2px dashed rgba(220,38,38,.55);border-radius:6px}
-.lead-card.med .lead-thumb::after{border-color:rgba(217,119,6,.55)}
+img.lead-thumb{position:relative}
+.lead-thumb{border:2px solid rgba(220,38,38,.35)}
+.lead-card.med .lead-thumb{border-color:rgba(217,119,6,.35)}
 .lead-info{flex:1;min-width:0}
 .lead-info .addr{font-weight:700;font-size:14.5px}
 .lead-info .note{font-size:13px;color:var(--muted);margin-top:3px;line-height:1.5}
@@ -274,7 +275,7 @@ footer a:hover{color:var(--text)}
         </div>
         <div class="dash-leads">
           <div class="lead-card">
-            <div class="lead-thumb"></div>
+            <img class="lead-thumb" src="/static/columbus_lead1.jpg" alt="Aerial view of 580 Park Street roof" style="object-fit:cover">
             <div class="lead-info">
               <div class="addr">580 Park Street</div>
               <div class="note">"Visible roof wear detected. Multiple areas show patterns consistent with aging or surface deterioration."</div>
@@ -282,7 +283,7 @@ footer a:hover{color:var(--text)}
             <span class="prio high">HIGH</span>
           </div>
           <div class="lead-card med">
-            <div class="lead-thumb"></div>
+            <img class="lead-thumb" src="/static/columbus_lead2.jpg" alt="Aerial view of 5016 Inspiration Drive roof" style="object-fit:cover">
             <div class="lead-info">
               <div class="addr">5016 Inspiration Drive</div>
               <div class="note">"Roof surface shows potential wear requiring closer review."</div>
