@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Patch severe-roof hunt
+      - name: Patch severe-roof hunt and strict Grade 1 QC
         shell: python
         run: |
           from pathlib import Path
@@ -39,10 +39,15 @@ jobs:
           if oldver in s:
               s = s.replace(oldver, newver, 1)
               changed = True
+          import_marker = 'try:\n    from flask import Request\n'
+          import_line = '\n# Load strict Grade 1 second-pass QC after the base pipeline and tuning wrappers.\ntry:\n    import grade1_qc\nexcept Exception as _grade1_qc_import_error:\n    print(f"Roof Scout Grade 1 QC skipped: {_grade1_qc_import_error}", flush=True)\n\n'
+          if 'import grade1_qc' not in s and import_marker in s:
+              s = s.replace(import_marker, import_line + import_marker, 1)
+              changed = True
           if changed:
               p.write_text(s)
           else:
-              print('No patch needed; severe hunt tuning already present.')
+              print('No patch needed; severe hunt + Grade 1 QC already present.')
       - name: Commit tuning
         shell: bash
         run: |
@@ -53,5 +58,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add sitecustomize.py
-          git commit -m "Prioritize severe roof hunt before normal aging"
+          git commit -m "Wire strict Grade 1 quality control"
           git push
