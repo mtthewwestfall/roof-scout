@@ -2826,6 +2826,9 @@ def admin_storm_check():
     t = threading.Thread(target=_run, daemon=True)
     t.start()
     return jsonify({"ok": True, "msg": "Storm check running in background."})
+
+
+@app.post("/api/admin/prewarm")
 def admin_prewarm():
     """Owner-only: pre-warm the scan cache for a list of ZIPs.
 
